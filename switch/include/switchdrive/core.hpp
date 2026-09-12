@@ -85,8 +85,8 @@ struct NspInstallJournal {
     bool deletePackage{}, ticketWasPresent{}, ticketImported{};
 };
 struct State {
-    int schemaVersion{3};
-    std::string serviceUrl, consolePublicKey, sessionToken, lastAccountId, lastFolderId;
+    int schemaVersion{4};
+    std::string serviceUrl, consolePublicKey, sessionToken, lastAccountId, lastFolderId, language{"en-US"};
     bool deleteAfterInstall{true};
     std::vector<Account> accounts;
     std::vector<Task> tasks;

@@ -39,7 +39,16 @@ filename.
 - Use a self-hosted OAuth service with encrypted refresh tokens, expiring
   pairings, one-time claims, rate limiting, PostgreSQL storage, and HTTPS through
   Caddy.
-- Navigate the console interface in Portuguese with Joy-Con or Pro Controller.
+- Navigate the console interface with Joy-Con or Pro Controller in English (US),
+  Portuguese (Brazil), or Spanish. English (US) is the default for new and
+  migrated installations.
+
+### Languages
+
+The Switch client stores an explicit UI-language preference in local state; it
+does not infer the console language. Open **Settings** and press **Y** to cycle
+through `English (US)` → `Português (Brasil)` → `Español`. The setting applies
+immediately and is retained after relaunch.
 
 ### File support
 
@@ -58,6 +67,7 @@ filename.
 - **X:** download the selected Drive file.
 - **Y:** download and install the selected Drive file.
 - **Y in Library:** remove the selected managed NSP component; saves are retained.
+- **Y in Settings:** change the UI language.
 - **L while browsing:** switch between My Drive and Shared with me.
 - **+:** close the app.
 
@@ -133,8 +143,7 @@ acceptance testing.
   console, requiring confirmation on the Switch.
 - Add safe application updates, release notes, and rollback to the previous NRO.
 - Export a diagnostic report with private data removed to simplify bug reports.
-- Add English and other translations, themes, accessibility settings, and
-  configurable controls.
+- Add themes, accessibility settings, and configurable controls.
 
 ## Build the Switch client
 

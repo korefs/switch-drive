@@ -1,4 +1,5 @@
 #include "switchdrive/core.hpp"
+#include "switchdrive/i18n.hpp"
 #include "switchdrive/network.hpp"
 
 #include <switch.h>
@@ -12,6 +13,7 @@
 
 namespace fs = std::filesystem;
 using namespace switchdrive;
+using namespace switchdrive::i18n;
 
 namespace {
 
@@ -27,14 +29,14 @@ constexpr auto kCheckpointInterval = std::chrono::seconds(10);
 
 void title(const char* page) {
     consoleClear();
-    printf("\x1b[36;1mSwitch Drive\x1b[0m  |  %s\n", page);
+    printf("\x1b[36;1m%s\x1b[0m  |  %s\n", tr(TextId::AppName), page);
     printf("────────────────────────────────────────────────────────\n");
 }
 
 void hint(const char* text) { printf("\n\x1b[90m%s\x1b[0m\n", text); }
 
 void waitForButton() {
-    printf("\nPressione A para continuar.");
+    printf("\n%s", tr(TextId::Continue));
     while (appletMainLoop()) {
         hidScanInput();
         if (hidKeysDown(CONTROLLER_P1_AUTO) & HidNpadButton_A) return;
@@ -45,12 +47,13 @@ void waitForButton() {
 bool chooseNspDestination(const NspPackageInfo& package, const std::vector<InstalledNspInfo>& installed, NspInstallStorage& destination) {
     destination = NspInstallStorage::SdCard;
     while (appletMainLoop()) {
-        title("Instalar NSP");
-        printf("%s\n", package.kind == NspContentKind::BaseGame ? "Jogo base" : package.kind == NspContentKind::Update ? "Atualização" : "DLC");
-        printf("Título: %s\nVersão: %u\n", package.baseTitleId.c_str(), package.version);
-        if (!installed.empty()) printf("Instalado: versão %u (%s)\n", installed.front().version, nspInstallStorageName(installed.front().storage));
-        printf("\n%s microSD\n%s Memória interna\n", destination == NspInstallStorage::SdCard ? ">" : " ", destination == NspInstallStorage::InternalUser ? ">" : " ");
-        hint("A: confirmar  B: cancelar  Cima/Baixo: destino");
+        title(tr(TextId::InstallNsp));
+        printf("%s\n", nspContentKindName(package.kind));
+        printf(tr(TextId::TitleId), package.baseTitleId.c_str()); printf("\n");
+        printf(tr(TextId::Version), package.version); printf("\n");
+        if (!installed.empty()) { printf(tr(TextId::InstalledVersion), installed.front().version, nspInstallStorageName(installed.front().storage)); printf("\n"); }
+        printf("\n%s %s\n%s %s\n", destination == NspInstallStorage::SdCard ? ">" : " ", tr(TextId::SdCard), destination == NspInstallStorage::InternalUser ? ">" : " ", tr(TextId::InternalStorage));
+        hint(tr(TextId::DestinationHint));
         hidScanInput(); const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO);
         if (pressed & (HidNpadButton_Up | HidNpadButton_Down)) destination = destination == NspInstallStorage::SdCard ? NspInstallStorage::InternalUser : NspInstallStorage::SdCard;
         if (pressed & HidNpadButton_A) return true;
@@ -73,7 +76,7 @@ std::string configServiceUrl() {
 
 void saveOrShow(StateStore& store, const State& state) {
     std::string error;
-    if (!store.save(state, error)) printf("\nErro ao salvar: %s", error.c_str());
+    if (!store.save(state, error)) { printf("\n"); printf(tr(TextId::SaveFailed), error.c_str()); }
 }
 
 bool md5File(const fs::path& path, StorageKind kind, std::string& digest, std::string& error) {
@@ -103,9 +106,9 @@ bool md5File(const fs::path& path, StorageKind kind, std::string& digest, std::s
 }
 
 bool connectAccount(StateStore& store, State& state) {
-    title("Conectar Google Drive");
+    title(tr(TextId::ConnectDrive));
     if (state.serviceUrl.empty()) {
-        printf("Crie sd:/switch-drive/config.json com a URL HTTPS do serviço.\n");
+        printf("%s\n", tr(TextId::ConfigMissing));
         waitForButton();
         return false;
     }
@@ -113,12 +116,12 @@ bool connectAccount(StateStore& store, State& state) {
     AuthClient auth(HttpClient{}, state.serviceUrl);
     std::string id, url, code, pollSecret, error;
     if (!auth.begin(state.consolePublicKey, id, url, code, pollSecret, error)) {
-        printf("Não foi possível iniciar: %s\n", error.c_str());
+        printf(tr(TextId::StartFailed), error.c_str()); printf("\n");
         waitForButton();
         return false;
     }
-    printf("No celular, abra:\n\x1b[36m%s\x1b[0m\n\nCódigo: \x1b[33;1m%s\x1b[0m\n", url.c_str(), code.c_str());
-    hint("A: verificar agora   B: cancelar");
+    printf("%s\n\x1b[36m%s\x1b[0m\n\n%s: \x1b[33;1m%s\x1b[0m\n", tr(TextId::OpenOnPhone), url.c_str(), tr(TextId::Code), code.c_str());
+    hint(tr(TextId::CheckNow));
     while (appletMainLoop()) {
         hidScanInput();
         const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO);
@@ -130,7 +133,7 @@ bool connectAccount(StateStore& store, State& state) {
                 if (exists == state.accounts.end()) state.accounts.push_back(account);
                 state.lastAccountId = account.id;
                 saveOrShow(store, state);
-                printf("\nConectado: %s\n", account.email.c_str());
+                printf("\n"); printf(tr(TextId::Connected), account.email.c_str()); printf("\n");
                 waitForButton();
                 return true;
             }
@@ -143,7 +146,7 @@ bool connectAccount(StateStore& store, State& state) {
 
 bool acquireToken(const State& state, std::string& token, std::string& error) {
     if (state.lastAccountId.empty()) {
-        error = "Conecte uma conta primeiro";
+        error = tr(TextId::ConnectAccountFirst);
         return false;
     }
     return AuthClient(HttpClient{}, state.serviceUrl).accessToken(state.sessionToken, state.lastAccountId, token, error);
@@ -167,17 +170,17 @@ Task* findIncompleteTask(State& state, const std::string& accountId, const std::
 enum class ResumeChoice { Resume, Restart, Cancel };
 
 ResumeChoice askResumeChoice(const Task& task, bool sourceChanged, bool identityMissing) {
-    title(sourceChanged ? "Arquivo remoto mudou" : "Download parcial encontrado");
+    title(tr(sourceChanged ? TextId::RemoteChanged : TextId::PartialDownloadFound));
     printf("%s\n", task.displayName.c_str());
-    printf("%llu de %llu bytes confirmados\n", static_cast<unsigned long long>(task.committedBytes), static_cast<unsigned long long>(task.expectedSize));
+    printf(tr(TextId::BytesConfirmed), static_cast<unsigned long long>(task.committedBytes), static_cast<unsigned long long>(task.expectedSize)); printf("\n");
     if (sourceChanged) {
-        printf("A versão do Drive mudou. O parcial será preservado até você reiniciar.\n");
-        hint("X: reiniciar   B: cancelar");
+        printf("%s\n", tr(TextId::RemoteVersionChanged));
+        hint(tr(TextId::RestartCancelHint));
     } else if (identityMissing) {
-        printf("O parcial não tem metadados suficientes para retomar com segurança.\n");
-        hint("X: reiniciar   B: cancelar");
+        printf("%s\n", tr(TextId::PartialIdentityMissing));
+        hint(tr(TextId::RestartCancelHint));
     } else {
-        hint("A: retomar   X: reiniciar   B: cancelar");
+        hint(tr(TextId::ResumeRestartCancelHint));
     }
     while (appletMainLoop()) {
         hidScanInput();
@@ -201,7 +204,7 @@ bool reconcileTask(Task& task, std::string& error) {
     if (!file.open(task.localPath, task.storageKind, true, error) || !file.size(physicalSize, error)) return false;
     if (physicalSize > task.expectedSize) {
         task.state = TaskState::Failed;
-        task.error = "Parcial inválido: maior que o arquivo remoto";
+        task.error = tr(TextId::PartialTooLarge);
         return false;
     }
     if (physicalSize > task.committedBytes) {
@@ -217,7 +220,7 @@ bool checkpointTask(StateStore& store, State& state, Task& task, LocalFile& file
     uint64_t size{};
     if (!file.flush(error) || !file.size(size, error)) return false;
     if (size > task.expectedSize) {
-        error = "Parcial inválido: maior que o arquivo remoto";
+        error = tr(TextId::PartialTooLarge);
         return false;
     }
     task.committedBytes = size;
@@ -252,7 +255,7 @@ bool verifyAndRecord(StateStore& store, State& state, Task& task, std::string& e
     std::string digest;
     if (!md5File(task.localPath, task.storageKind, digest, error)) return false;
     if (!task.md5.empty() && digest != task.md5) {
-        error = "checksum MD5 não confere";
+        error = tr(TextId::ChecksumMismatch);
         return false;
     }
     task.state = TaskState::Completed;
@@ -297,7 +300,7 @@ void installIfRequested(StateStore& store, State& state, Task& task) {
         installed = installer.inspect(task.localPath, task.storageKind, package, error) && installer.queryInstalled(package, existing, error);
         if (installed) {
             const auto decision = decideNspInstall(package, existing);
-            if (decision == NspInstallDecision::DowngradeBlocked) { installed = false; error = "Atualização recusada: a versão instalada é mais nova"; }
+            if (decision == NspInstallDecision::DowngradeBlocked) { installed = false; error = tr(TextId::DowngradeBlocked); }
             else if (decision == NspInstallDecision::AlreadyInstalled) {
                 library->installed = InstallKind::Nsp; library->nspContentKind = package.kind; library->nspMetaId = package.metaId; library->nspBaseTitleId = package.baseTitleId; library->nspVersion = package.version; library->nspInstallState = NspInstallState::Installed;
             } else {
@@ -305,7 +308,7 @@ void installIfRequested(StateStore& store, State& state, Task& task) {
                 if (!chooseNspDestination(package, existing, destination)) return;
                 NspInstallJournal journal; journal.libraryId = library->id; journal.localPath = task.localPath; journal.deletePackage = task.deleteAfterInstall;
                 library->nspInstallState = NspInstallState::Installing; saveOrShow(store, state);
-                installed = installer.install(task.localPath, task.storageKind, package, destination, store, journal, [](uint64_t current, uint64_t total) { printf("\rInstalando %llu / %llu bytes", static_cast<unsigned long long>(current), static_cast<unsigned long long>(total)); consoleUpdate(nullptr); return appletMainLoop(); }, error);
+                installed = installer.install(task.localPath, task.storageKind, package, destination, store, journal, [](uint64_t current, uint64_t total) { printf("\r"); printf(tr(TextId::InstallingBytes), static_cast<unsigned long long>(current), static_cast<unsigned long long>(total)); consoleUpdate(nullptr); return appletMainLoop(); }, error);
                 if (installed) {
                     library->installed = InstallKind::Nsp; library->installedContentId = package.metaId; library->nspContentKind = package.kind; library->nspStorage = destination; library->nspMetaId = package.metaId; library->nspBaseTitleId = package.baseTitleId; library->nspVersion = package.version; library->nspInstallState = NspInstallState::Installed;
                 } else library->nspInstallState = NspInstallState::Failed;
@@ -318,7 +321,7 @@ void installIfRequested(StateStore& store, State& state, Task& task) {
         return;
     }
     if (!installed) {
-        printf("Instalação falhou: %s\n", error.c_str());
+        printf(tr(TextId::InstallFailed), error.c_str()); printf("\n");
         return;
     }
     if (task.deleteAfterInstall) {
@@ -326,7 +329,7 @@ void installIfRequested(StateStore& store, State& state, Task& task) {
             task.localState = LocalState::RemovedAfterInstall;
             library->localState = LocalState::RemovedAfterInstall;
         } else {
-            printf("Instalado — limpeza pendente: %s\n", error.c_str());
+            printf(tr(TextId::InstalledCleanupPending), error.c_str()); printf("\n");
         }
     }
     saveOrShow(store, state);
@@ -361,8 +364,8 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
 
     if (restart) {
         if (LocalFile::exists(task->localPath, task->storageKind) && !LocalFile::remove(task->localPath, task->storageKind, error)) {
-            title("Reiniciar download");
-            printf("Não foi possível apagar o parcial: %s\n", error.c_str());
+            title(tr(TextId::RestartDownload));
+            printf(tr(TextId::CannotDeletePartial), error.c_str()); printf("\n");
             waitForButton();
             return;
         }
@@ -378,7 +381,7 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
             task->state = TaskState::Failed;
             task->error = error;
             saveOrShow(store, state);
-            title("Download parcial inválido");
+            title(tr(TextId::InvalidPartial));
             printf("%s\n", error.c_str());
             waitForButton();
             return;
@@ -386,10 +389,10 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
     }
     if (!hasEnoughSpace(task->expectedSize - task->committedBytes)) {
         task->state = TaskState::Paused;
-        task->error = "Espaço insuficiente no microSD";
+        task->error = tr(TextId::SdCardInsufficient);
         saveOrShow(store, state);
-        title("Espaço insuficiente");
-        printf("Libere espaço e escolha o arquivo novamente para retomar.\n");
+        title(tr(TextId::InsufficientSpace));
+        printf("%s\n", tr(TextId::FreeSpaceAndRetry));
         waitForButton();
         return;
     }
@@ -406,7 +409,7 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
         task->state = TaskState::Failed;
         task->error = error;
         saveOrShow(store, state);
-        title("Erro de armazenamento");
+        title(tr(TextId::StorageError));
         printf("%s\n", error.c_str());
         waitForButton();
         return;
@@ -414,8 +417,8 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
 
     task->state = TaskState::Downloading;
     saveOrShow(store, state);
-    title(task->committedBytes ? "Retomando download" : "Transferências");
-    printf("Baixando %s\n", task->displayName.c_str());
+    title(tr(task->committedBytes ? TextId::ResumingDownload : TextId::Transfers));
+    printf(tr(TextId::Downloading), task->displayName.c_str()); printf("\n");
     auto lastCheckpoint = task->committedBytes;
     auto lastCheckpointAt = std::chrono::steady_clock::now();
     DownloadResult result;
@@ -431,7 +434,7 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
             return store.save(state, error);
         },
         [&](uint64_t received) {
-            printf("\r%llu / %llu bytes   ", static_cast<unsigned long long>(received), static_cast<unsigned long long>(task->expectedSize));
+            printf("\r"); printf(tr(TextId::BytesProgress), static_cast<unsigned long long>(received), static_cast<unsigned long long>(task->expectedSize)); printf("   ");
             const auto now = std::chrono::steady_clock::now();
             if (received - lastCheckpoint >= kCheckpointBytes && now - lastCheckpointAt >= kCheckpointInterval) {
                 if (!checkpointTask(store, state, *task, output, error)) return false;
@@ -451,7 +454,7 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
         task->state = result.status == DownloadStatus::RangeRejected ? TaskState::Failed : TaskState::Paused;
         task->error = error;
         saveOrShow(store, state);
-        printf("\n%s: %s\n", result.status == DownloadStatus::RangeRejected ? "Faixa recusada" : "Pausado", error.c_str());
+        printf("\n%s: %s\n", tr(result.status == DownloadStatus::RangeRejected ? TextId::RangeRejected : TextId::Paused), error.c_str());
         waitForButton();
         return;
     }
@@ -460,11 +463,11 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
         task->state = TaskState::Failed;
         task->error = error;
         saveOrShow(store, state);
-        printf("\nDownload inválido: %s\n", error.c_str());
+        printf("\n"); printf(tr(TextId::DownloadInvalid), error.c_str()); printf("\n");
         waitForButton();
         return;
     }
-    printf("\nDownload concluído.\n");
+    printf("\n%s\n", tr(TextId::DownloadComplete));
     installIfRequested(store, state, *task);
     waitForButton();
 }
@@ -475,7 +478,7 @@ void recoverTasks(StateStore& store, State& state) {
         if (task.state == TaskState::Completed || task.state == TaskState::Cancelled) continue;
         task.state = TaskState::Paused;
         if (!hasResumeIdentity(task)) {
-            task.error = "Parcial sem identidade remota; reinicie o download";
+            task.error = tr(TextId::PartialIdentityRestart);
             changed = true;
             continue;
         }
@@ -485,9 +488,9 @@ void recoverTasks(StateStore& store, State& state) {
             task.error = error;
         } else if (task.committedBytes == task.expectedSize) {
             task.state = TaskState::Paused;
-            task.error = "Download completo aguardando verificação";
+            task.error = tr(TextId::CompleteAwaitingVerification);
         } else {
-            task.error = "Download interrompido; selecione o arquivo para retomar";
+            task.error = tr(TextId::InterruptedDownload);
         }
         changed = true;
     }
@@ -496,11 +499,11 @@ void recoverTasks(StateStore& store, State& state) {
 
 void recoverInstallJournal(StateStore& store, State& state) {
     NspInstallJournal journal; std::string error; bool exists = false;
-    if (!store.loadInstallJournal(journal, error, exists)) { title("Recuperação NSP"); printf("%s\nNenhuma instalação NSP será iniciada.\n", error.c_str()); waitForButton(); return; }
+    if (!store.loadInstallJournal(journal, error, exists)) { title(tr(TextId::NspRecovery)); printf("%s\n%s\n", error.c_str(), tr(TextId::NoNspInstallWillStart)); waitForButton(); return; }
     if (!exists) return;
     const NspInstallJournal recovered = journal;
     NspInstaller installer;
-    if (!installer.recover(store, journal, error)) { title("Recuperação NSP"); printf("%s\n", error.c_str()); waitForButton(); return; }
+    if (!installer.recover(store, journal, error)) { title(tr(TextId::NspRecovery)); printf("%s\n", error.c_str()); waitForButton(); return; }
     const auto it = std::find_if(state.library.begin(), state.library.end(), [&](const LibraryItem& item) { return item.id == recovered.libraryId; });
     if (it != state.library.end() && recovered.operation == "install") it->nspInstallState = recovered.phase == "committed" ? NspInstallState::Installed : NspInstallState::Failed;
     saveOrShow(store, state);
@@ -509,7 +512,7 @@ void recoverInstallJournal(StateStore& store, State& state) {
 void browse(StateStore& store, State& state) {
     std::string token, error;
     if (!acquireToken(state, token, error)) {
-        title("Arquivos");
+        title(tr(TextId::Files));
         printf("%s\n", error.c_str());
         waitForButton();
         return;
@@ -523,19 +526,19 @@ void browse(StateStore& store, State& state) {
         std::vector<RemoteFile> files;
         std::string next;
         if (!drive.list(token, folder, shared, "", files, next, error)) {
-            title("Arquivos");
-            printf("Erro do Drive: %s\n", error.c_str());
+            title(tr(TextId::Files));
+            printf(tr(TextId::DriveError), error.c_str()); printf("\n");
             waitForButton();
             return;
         }
-        title(shared ? "Compartilhados comigo" : "Meu Drive");
-        printf("Conta: %s\n\n", state.lastAccountId.c_str());
-        if (files.empty()) printf("Pasta vazia.\n");
+        title(tr(shared ? TextId::SharedWithMe : TextId::MyDrive));
+        printf(tr(TextId::AccountLabel), state.lastAccountId.c_str()); printf("\n\n");
+        if (files.empty()) printf("%s\n", tr(TextId::EmptyFolder));
         for (size_t i = 0; i < files.size() && i < 20; ++i) {
             const auto& file = files[i];
             printf("%s %c %-42s %10llu\n", i == selected ? ">" : " ", file.folder ? 'D' : 'F', file.name.c_str(), static_cast<unsigned long long>(file.size));
         }
-        hint("A: abrir  X: baixar  Y: baixar e instalar  L: compartilhados  B: voltar");
+        hint(tr(TextId::BrowseHint));
         bool refresh = false;
         while (appletMainLoop() && !refresh) {
             hidScanInput();
@@ -557,14 +560,14 @@ void browse(StateStore& store, State& state) {
 }
 
 void library(StateStore& store, State& state) {
-    title("Biblioteca");
-    if (state.library.empty()) printf("Nenhum download indexado.\n");
+    title(tr(TextId::Library));
+    if (state.library.empty()) printf("%s\n", tr(TextId::NoIndexedDownloads));
     size_t selected = 0;
     for (size_t i = 0; i < state.library.size(); ++i) {
         const auto& item = state.library[i];
-        printf("%c %zu. %s  [%s%s]\n", i == selected ? '>' : ' ', i + 1, item.name.c_str(), item.localState == LocalState::Present ? "arquivo local" : "removido", item.nspInstallState == NspInstallState::Installed ? ", NSP instalado" : "");
+        printf("%c %zu. %s  [%s%s]\n", i == selected ? '>' : ' ', i + 1, item.name.c_str(), item.localState == LocalState::Present ? tr(TextId::LocalFile) : tr(TextId::RemovedAfterInstall), item.nspInstallState == NspInstallState::Installed ? tr(TextId::NspInstalledSuffix) : "");
     }
-    hint("A: verificar  Y: remover NSP gerenciado  B: voltar");
+    hint(tr(TextId::LibraryHint));
     while (appletMainLoop()) {
         hidScanInput();
         const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO);
@@ -573,7 +576,7 @@ void library(StateStore& store, State& state) {
         if ((pressed & HidNpadButton_A) && !state.library.empty()) {
             auto& item = state.library[selected];
             if (item.localState == LocalState::Present && !LocalFile::exists(item.localPath, item.storageKind)) {
-                printf("\nEste arquivo não foi encontrado. Deseja excluir o atalho?  X: excluir\n");
+                printf("\n%s\n", tr(TextId::RemoveShortcutQuestion));
                 while (appletMainLoop()) {
                     hidScanInput();
                     const auto confirmation = hidKeysDown(CONTROLLER_P1_AUTO);
@@ -586,15 +589,15 @@ void library(StateStore& store, State& state) {
         }
         if ((pressed & HidNpadButton_Y) && !state.library.empty()) {
             auto& item = state.library[selected];
-            if (item.installed != InstallKind::Nsp || item.nspInstallState != NspInstallState::Installed || item.nspMetaId.empty()) { printf("\nNão há NSP gerenciado para remover.\n"); waitForButton(); return; }
-            title("Remover NSP");
+            if (item.installed != InstallKind::Nsp || item.nspInstallState != NspInstallState::Installed || item.nspMetaId.empty()) { printf("\n%s\n", tr(TextId::NoManagedNsp)); waitForButton(); return; }
+            title(tr(TextId::RemoveNsp));
             printf("%s\n%s %s\n", item.name.c_str(), nspContentKindName(item.nspContentKind), item.nspMetaId.c_str());
-            if (item.nspContentKind == NspContentKind::BaseGame) printf("Atualizações e DLC não serão removidos. Os saves serão preservados.\n");
-            hint("X: confirmar remoção   B: cancelar");
+            if (item.nspContentKind == NspContentKind::BaseGame) printf("%s\n", tr(TextId::BaseRemovalWarning));
+            hint(tr(TextId::RemoveConfirm));
             while (appletMainLoop()) { hidScanInput(); const auto confirmation = hidKeysDown(CONTROLLER_P1_AUTO); if (confirmation & HidNpadButton_B) return; if (confirmation & HidNpadButton_X) {
                 InstalledNspInfo target{true, item.nspStorage, item.nspVersion, item.nspMetaId, item.nspBaseTitleId, item.nspContentKind}; NspInstallJournal journal; std::string error;
                 if (NspInstaller{}.uninstall(target, store, journal, error)) { item.installed = InstallKind::None; item.nspInstallState = NspInstallState::None; item.installedContentId.clear(); saveOrShow(store, state); }
-                else { printf("\nRemoção falhou: %s\n", error.c_str()); waitForButton(); }
+                else { printf("\n"); printf(tr(TextId::RemovalFailed), error.c_str()); printf("\n"); waitForButton(); }
                 return;
             } consoleUpdate(nullptr); }
         }
@@ -615,25 +618,28 @@ int main(int argc, char* argv[]) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
     StateStore store(kRoot);
     State state = store.load();
+    setLanguage(parseLanguage(state.language));
     if (state.serviceUrl.empty()) state.serviceUrl = configServiceUrl();
     recoverInstallJournal(store, state);
     recoverTasks(store, state);
 
     int page = 0;
     while (appletMainLoop()) {
-        title(page == 0 ? "Início" : page == 1 ? "Arquivos" : page == 2 ? "Biblioteca" : "Configurações");
+        title(tr(page == 0 ? TextId::Home : page == 1 ? TextId::Files : page == 2 ? TextId::Library : TextId::Settings));
         if (page == 0) {
-            const std::string accountText = state.accounts.empty() ? "Nenhuma conta conectada." : "Conta ativa: " + state.lastAccountId;
-            printf("%s\n", accountText.c_str());
-            printf("\nA: conectar conta     X: abrir arquivos\n");
+            if (state.accounts.empty()) printf("%s\n", tr(TextId::NoAccountConnected));
+            else { printf(tr(TextId::ActiveAccount), state.lastAccountId.c_str()); printf("\n"); }
+            printf("\n%s\n", tr(TextId::OpenFiles));
         } else if (page == 1) {
-            printf("A: abrir navegador do Drive\n");
+            printf("%s\n", tr(TextId::BrowseDrive));
         } else if (page == 2) {
-            printf("A: abrir biblioteca (%zu itens)\n", state.library.size());
+            printf(tr(TextId::OpenLibrary), state.library.size()); printf("\n");
         } else {
-            printf("Limpar após instalar: %s\nA: alternar     X: adicionar conta\n", state.deleteAfterInstall ? "sim" : "não");
+            printf(tr(TextId::CleanupAfterInstall), state.deleteAfterInstall ? tr(TextId::Yes) : tr(TextId::No)); printf("\n");
+            printf("%s: %s\n", tr(TextId::Language), languageName(currentLanguage()).data());
+            printf("%s\n%s\n", tr(TextId::ToggleCleanup), tr(TextId::ChangeLanguage));
         }
-        hint("L/R: trocar tela   +: sair");
+        hint(tr(TextId::NavigationHint));
         hidScanInput();
         const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO);
         if (pressed & HidNpadButton_Plus) break;
@@ -645,6 +651,7 @@ int main(int argc, char* argv[]) {
         if (page == 2 && (pressed & HidNpadButton_A)) library(store, state);
         if (page == 3 && (pressed & HidNpadButton_A)) { state.deleteAfterInstall = !state.deleteAfterInstall; saveOrShow(store, state); }
         if (page == 3 && (pressed & HidNpadButton_X)) connectAccount(store, state);
+        if (page == 3 && (pressed & HidNpadButton_Y)) { setLanguage(nextLanguage(currentLanguage())); state.language = languageCode(currentLanguage()); saveOrShow(store, state); }
         consoleUpdate(nullptr);
     }
     curl_global_cleanup();

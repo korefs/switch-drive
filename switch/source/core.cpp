@@ -1,4 +1,5 @@
 #include "switchdrive/core.hpp"
+#include "switchdrive/i18n.hpp"
 
 #include <chrono>
 #include <climits>
@@ -193,7 +194,7 @@ std::vector<std::string> objectRows(const std::string& json, const std::string& 
 
 bool seekFile(std::FILE* file, uint64_t offset, std::string& error) {
     if (offset > static_cast<uint64_t>(LLONG_MAX) || ::fseeko(file, static_cast<off_t>(offset), SEEK_SET) != 0) {
-        error = "não foi possível posicionar o arquivo";
+        error = i18n::tr(i18n::TextId::SeekFailed);
         return false;
     }
     return true;
@@ -201,7 +202,7 @@ bool seekFile(std::FILE* file, uint64_t offset, std::string& error) {
 
 bool truncateFile(std::FILE* file, uint64_t size, std::string& error) {
     if (size > static_cast<uint64_t>(LLONG_MAX) || ::ftruncate(::fileno(file), static_cast<off_t>(size)) != 0) {
-        error = "não foi possível truncar o arquivo";
+        error = i18n::tr(i18n::TextId::TruncateFailed);
         return false;
     }
     return true;
@@ -245,8 +246,18 @@ StorageKind storageKindForSize(uint64_t size, uint64_t limit) {
 const char* storageKindName(StorageKind kind) {
     return kind == StorageKind::Concatenated ? "concatenated" : "regular";
 }
-const char* nspContentKindName(NspContentKind kind) { return nspKindName(kind); }
-const char* nspInstallStorageName(NspInstallStorage storage) { return nspStorageName(storage); }
+const char* nspContentKindName(NspContentKind kind) {
+    using i18n::TextId;
+    switch (kind) {
+        case NspContentKind::BaseGame: return i18n::tr(TextId::BaseGame);
+        case NspContentKind::Update: return i18n::tr(TextId::Update);
+        case NspContentKind::Dlc: return i18n::tr(TextId::Dlc);
+        default: return "";
+    }
+}
+const char* nspInstallStorageName(NspInstallStorage storage) {
+    return i18n::tr(storage == NspInstallStorage::InternalUser ? i18n::TextId::InternalStorage : i18n::TextId::SdCard);
+}
 const char* nspInstallStateName(NspInstallState state) { return nspStateName(state); }
 
 NspInstallDecision decideNspInstall(const NspPackageInfo& package, const std::vector<InstalledNspInfo>& installed) {
@@ -300,7 +311,7 @@ bool LocalFile::openRegular(bool create, std::string& error) {
     const char* mode = writable_ ? (create ? "w+b" : "r+b") : "rb";
     file_ = std::fopen(path_.string().c_str(), mode);
     if (!file_) {
-        error = "não foi possível abrir o arquivo lógico";
+        error = i18n::tr(i18n::TextId::LogicalFileOpenFailed);
         return false;
     }
     opened_ = true;
@@ -314,7 +325,7 @@ bool LocalFile::create(const fs::path& path, StorageKind kind, std::string& erro
     segmentSize_ = segmentSize;
     writable_ = true;
     if (segmentSize_ == 0) {
-        error = "tamanho de segmento inválido";
+        error = i18n::tr(i18n::TextId::InvalidSegmentSize);
         return false;
     }
     std::error_code ec;
@@ -324,14 +335,14 @@ bool LocalFile::create(const fs::path& path, StorageKind kind, std::string& erro
         return false;
     }
     if (fs::exists(path_, ec)) {
-        error = "o destino de download já existe";
+        error = i18n::tr(i18n::TextId::DownloadAlreadyExists);
         return false;
     }
 #ifdef __SWITCH__
     if (kind_ == StorageKind::Concatenated) {
         const Result rc = fsdevCreateFile(path_.string().c_str(), 0, FsCreateOption_BigFile);
         if (R_FAILED(rc)) {
-            error = "não foi possível criar arquivo concatenado";
+            error = i18n::tr(i18n::TextId::ConcatenatedCreateFailed);
             return false;
         }
         return openRegular(false, error);
@@ -356,7 +367,7 @@ bool LocalFile::open(const fs::path& path, StorageKind kind, bool writable, std:
     segmentSize_ = segmentSize;
     writable_ = writable;
     if (segmentSize_ == 0 || !exists(path_, kind_)) {
-        error = "arquivo lógico não encontrado";
+        error = i18n::tr(i18n::TextId::LogicalFileMissing);
         return false;
     }
 #ifndef __SWITCH__
@@ -370,7 +381,7 @@ bool LocalFile::open(const fs::path& path, StorageKind kind, bool writable, std:
 
 bool LocalFile::readAt(uint64_t offset, void* buffer, size_t amount, std::string& error) const {
     if (!opened_) {
-        error = "arquivo lógico fechado";
+        error = i18n::tr(i18n::TextId::LogicalFileClosed);
         return false;
     }
 #ifndef __SWITCH__
@@ -384,7 +395,7 @@ bool LocalFile::readAt(uint64_t offset, void* buffer, size_t amount, std::string
             std::FILE* segment = std::fopen(segmentPath(part).string().c_str(), "rb");
             if (!segment || !seekFile(segment, localOffset, error) || std::fread(target, 1, chunk, segment) != chunk) {
                 if (segment) std::fclose(segment);
-                if (error.empty()) error = "leitura incompleta de segmento";
+                if (error.empty()) error = i18n::tr(i18n::TextId::LogicalFileReadFailed);
                 return false;
             }
             std::fclose(segment);
@@ -397,7 +408,7 @@ bool LocalFile::readAt(uint64_t offset, void* buffer, size_t amount, std::string
 #endif
     if (!seekFile(file_, offset, error)) return false;
     if (std::fread(buffer, 1, amount, file_) != amount) {
-        error = "leitura incompleta do arquivo lógico";
+        error = i18n::tr(i18n::TextId::LogicalFileReadFailed);
         return false;
     }
     return true;
@@ -405,7 +416,7 @@ bool LocalFile::readAt(uint64_t offset, void* buffer, size_t amount, std::string
 
 bool LocalFile::writeAt(uint64_t offset, const void* buffer, size_t amount, std::string& error) {
     if (!opened_ || !writable_) {
-        error = "arquivo lógico não está aberto para escrita";
+        error = i18n::tr(i18n::TextId::LogicalFileNotWritable);
         return false;
     }
 #ifndef __SWITCH__
@@ -421,12 +432,12 @@ bool LocalFile::writeAt(uint64_t offset, const void* buffer, size_t amount, std:
             if (!segment) segment = std::fopen(segmentPathValue.string().c_str(), "w+b");
             if (!segment || !seekFile(segment, localOffset, error) || std::fwrite(source, 1, chunk, segment) != chunk) {
                 if (segment) std::fclose(segment);
-                if (error.empty()) error = "não foi possível gravar segmento";
+                if (error.empty()) error = i18n::tr(i18n::TextId::SegmentWriteFailed);
                 return false;
             }
             if (std::fflush(segment) != 0) {
                 std::fclose(segment);
-                error = "não foi possível gravar segmento";
+                error = i18n::tr(i18n::TextId::SegmentWriteFailed);
                 return false;
             }
             std::fclose(segment);
@@ -439,7 +450,7 @@ bool LocalFile::writeAt(uint64_t offset, const void* buffer, size_t amount, std:
 #endif
     if (!seekFile(file_, offset, error)) return false;
     if (std::fwrite(buffer, 1, amount, file_) != amount) {
-        error = "não foi possível gravar arquivo lógico";
+        error = i18n::tr(i18n::TextId::LogicalFileWriteFailed);
         return false;
     }
     return true;
@@ -448,7 +459,7 @@ bool LocalFile::writeAt(uint64_t offset, const void* buffer, size_t amount, std:
 bool LocalFile::size(uint64_t& out, std::string& error) const {
     out = 0;
     if (!opened_) {
-        error = "arquivo lógico fechado";
+        error = i18n::tr(i18n::TextId::LogicalFileClosed);
         return false;
     }
 #ifndef __SWITCH__
@@ -459,7 +470,7 @@ bool LocalFile::size(uint64_t& out, std::string& error) const {
             if (!fs::exists(part, ec)) return !ec;
             const uint64_t partSize = fs::file_size(part, ec);
             if (ec || partSize > segmentSize_) {
-                error = "segmento concatenado inválido";
+                error = i18n::tr(i18n::TextId::InvalidSegment);
                 return false;
             }
             out += partSize;
@@ -468,12 +479,12 @@ bool LocalFile::size(uint64_t& out, std::string& error) const {
     }
 #endif
     if (::fseeko(file_, 0, SEEK_END) != 0) {
-        error = "não foi possível consultar tamanho";
+        error = i18n::tr(i18n::TextId::FileSizeQueryFailed);
         return false;
     }
     const off_t position = ::ftello(file_);
     if (position < 0) {
-        error = "não foi possível consultar tamanho";
+        error = i18n::tr(i18n::TextId::FileSizeQueryFailed);
         return false;
     }
     out = static_cast<uint64_t>(position);
@@ -482,7 +493,7 @@ bool LocalFile::size(uint64_t& out, std::string& error) const {
 
 bool LocalFile::truncate(uint64_t targetSize, std::string& error) {
     if (!opened_ || !writable_) {
-        error = "arquivo lógico não está aberto para escrita";
+        error = i18n::tr(i18n::TextId::LogicalFileNotWritable);
         return false;
     }
 #ifndef __SWITCH__
@@ -517,14 +528,14 @@ bool LocalFile::truncate(uint64_t targetSize, std::string& error) {
 
 bool LocalFile::flush(std::string& error) {
     if (!opened_) {
-        error = "arquivo lógico fechado";
+        error = i18n::tr(i18n::TextId::LogicalFileClosed);
         return false;
     }
 #ifndef __SWITCH__
     if (kind_ == StorageKind::Concatenated) return true;
 #endif
     if (std::fflush(file_) != 0 || ::fsync(::fileno(file_)) != 0) {
-        error = "não foi possível confirmar arquivo lógico";
+        error = i18n::tr(i18n::TextId::FileFlushFailed);
         return false;
     }
     return true;
@@ -567,14 +578,15 @@ State StateStore::load() {
     if (!input.good()) return state;
     const std::string json((std::istreambuf_iterator<char>(input)), {});
     const int schemaVersion = static_cast<int>(numberField(json, "schemaVersion"));
-    if (schemaVersion != 1 && schemaVersion != 2 && schemaVersion != 3) return state;
+    if (schemaVersion != 1 && schemaVersion != 2 && schemaVersion != 3 && schemaVersion != 4) return state;
 
-    state.schemaVersion = 3;
+    state.schemaVersion = 4;
     state.serviceUrl = stringField(json, "serviceUrl");
     state.consolePublicKey = stringField(json, "consolePublicKey");
     state.sessionToken = stringField(json, "sessionToken");
     state.lastAccountId = stringField(json, "lastAccountId");
     state.lastFolderId = stringField(json, "lastFolderId");
+    state.language = std::string(i18n::languageCode(i18n::parseLanguage(stringField(json, "language"))));
     state.deleteAfterInstall = boolField(json, "deleteAfterInstall", true);
 
     for (const auto& row : objectRows(json, "accounts")) {
@@ -646,14 +658,16 @@ bool StateStore::save(const State& state, std::string& error) {
     const auto backup = root_ / "state.json.bak";
     std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
     if (!output) {
-        error = "não foi possível abrir o estado temporário";
+        error = i18n::tr(i18n::TextId::StateTempOpenFailed);
         return false;
     }
-    output << "{\"schemaVersion\":3,\"serviceUrl\":\"" << escape(state.serviceUrl)
+    const std::string language(i18n::languageCode(i18n::parseLanguage(state.language)));
+    output << "{\"schemaVersion\":4,\"serviceUrl\":\"" << escape(state.serviceUrl)
            << "\",\"consolePublicKey\":\"" << escape(state.consolePublicKey)
            << "\",\"sessionToken\":\"" << escape(state.sessionToken)
            << "\",\"lastAccountId\":\"" << escape(state.lastAccountId)
            << "\",\"lastFolderId\":\"" << escape(state.lastFolderId)
+           << "\",\"language\":\"" << language
            << "\",\"deleteAfterInstall\":" << (state.deleteAfterInstall ? "true" : "false") << ",\"accounts\":[";
     for (size_t i = 0; i < state.accounts.size(); ++i) {
         const auto& account = state.accounts[i];
@@ -694,7 +708,7 @@ bool StateStore::save(const State& state, std::string& error) {
     output.flush();
     output.close();
     if (!output) {
-        error = "falha ao gravar estado";
+        error = i18n::tr(i18n::TextId::StateWriteFailed);
         return false;
     }
     if (fs::exists(current, ec)) {
@@ -724,7 +738,7 @@ bool StateStore::loadInstallJournal(NspInstallJournal& journal, std::string& err
     if (!input.good()) return true;
     exists = true;
     const std::string json((std::istreambuf_iterator<char>(input)), {});
-    if (numberField(json, "journalVersion") != 1) { error = "diário de instalação inválido"; return false; }
+    if (numberField(json, "journalVersion") != 1) { error = i18n::tr(i18n::TextId::JournalInvalid); return false; }
     journal.operation = stringField(json, "operation");
     journal.libraryId = stringField(json, "libraryId");
     journal.localPath = stringField(json, "localPath");
@@ -751,7 +765,7 @@ bool StateStore::loadInstallJournal(NspInstallJournal& journal, std::string& err
         previous.kind = parseNspKind(stringField(row, "kind")); previous.storage = parseNspStorage(stringField(row, "storage"));
         if (!previous.metaId.empty()) journal.previous.push_back(std::move(previous));
     }
-    if (journal.operation.empty() || journal.package.metaId.empty()) { error = "diário de instalação incompleto"; return false; }
+    if (journal.operation.empty() || journal.package.metaId.empty()) { error = i18n::tr(i18n::TextId::JournalIncomplete); return false; }
     return true;
 }
 
@@ -763,7 +777,7 @@ bool StateStore::saveInstallJournal(const NspInstallJournal& journal, std::strin
     const auto current = root_ / "install-journal.json";
     const auto backup = root_ / "install-journal.json.bak";
     std::FILE* output = std::fopen(temporary.string().c_str(), "wb");
-    if (!output) { error = "não foi possível gravar o diário de instalação"; return false; }
+    if (!output) { error = i18n::tr(i18n::TextId::JournalWriteFailed); return false; }
     std::ostringstream data;
     data << "{\"journalVersion\":1,\"operation\":\"" << escape(journal.operation) << "\",\"libraryId\":\"" << escape(journal.libraryId)
          << "\",\"localPath\":\"" << escape(journal.localPath) << "\",\"phase\":\"" << escape(journal.phase)
@@ -786,13 +800,13 @@ bool StateStore::saveInstallJournal(const NspInstallJournal& journal, std::strin
     const std::string encoded = data.str();
     const bool wrote = std::fwrite(encoded.data(), 1, encoded.size(), output) == encoded.size() && std::fflush(output) == 0 && ::fsync(::fileno(output)) == 0;
     std::fclose(output);
-    if (!wrote) { error = "falha ao sincronizar o diário de instalação"; return false; }
+    if (!wrote) { error = i18n::tr(i18n::TextId::JournalSyncFailed); return false; }
     if (fs::exists(current, ec)) { fs::copy_file(current, backup, fs::copy_options::overwrite_existing, ec); if (ec) { error = ec.message(); return false; } }
     fs::rename(temporary, current, ec);
     if (ec) { error = ec.message(); return false; }
 #ifdef __SWITCH__
     const Result rc = fsdevCommitDevice("sdmc");
-    if (R_FAILED(rc)) { error = "não foi possível confirmar o diário no microSD"; return false; }
+    if (R_FAILED(rc)) { error = i18n::tr(i18n::TextId::JournalCommitFailed); return false; }
 #endif
     return true;
 }
@@ -804,7 +818,7 @@ bool StateStore::clearInstallJournal(std::string& error) const {
     fs::remove(root_ / "install-journal.json.bak", ec);
     if (ec) { error = ec.message(); return false; }
 #ifdef __SWITCH__
-    if (R_FAILED(fsdevCommitDevice("sdmc"))) { error = "não foi possível confirmar a limpeza do diário"; return false; }
+    if (R_FAILED(fsdevCommitDevice("sdmc"))) { error = i18n::tr(i18n::TextId::JournalClearCommitFailed); return false; }
 #endif
     return true;
 }
@@ -830,24 +844,24 @@ bool Pfs0::open(const fs::path& path, StorageKind kind, std::string& error, uint
     if (!input.size(total, error)) return false;
     Pfs0Header header{};
     if (!input.readAt(0, &header, sizeof(header), error) || std::string(header.magic, 4) != "PFS0" || header.fileCount == 0 || header.fileCount > 4096 || header.stringTableSize > 4 * 1024 * 1024) {
-        error = "NSP inválido: cabeçalho PFS0";
+        error = i18n::tr(i18n::TextId::Pfs0InvalidHeader);
         return false;
     }
     const uint64_t rawSize = static_cast<uint64_t>(header.fileCount) * sizeof(Pfs0RawEntry);
     const uint64_t dataStart = sizeof(header) + rawSize + header.stringTableSize;
     if (dataStart > total) {
-        error = "NSP inválido: entradas PFS0";
+        error = i18n::tr(i18n::TextId::Pfs0InvalidEntries);
         return false;
     }
     std::vector<Pfs0RawEntry> raw(header.fileCount);
     std::string strings(header.stringTableSize, '\0');
     if (!input.readAt(sizeof(header), raw.data(), static_cast<size_t>(rawSize), error) || !input.readAt(sizeof(header) + rawSize, strings.data(), strings.size(), error)) {
-        error = "NSP inválido: dados PFS0";
+        error = i18n::tr(i18n::TextId::Pfs0InvalidData);
         return false;
     }
     for (const auto& entry : raw) {
         if (entry.stringOffset >= strings.size() || entry.offset > total - dataStart || entry.size > total - dataStart - entry.offset) {
-            error = "NSP inválido: entradas PFS0";
+            error = i18n::tr(i18n::TextId::Pfs0InvalidEntries);
             return false;
         }
         const char* name = strings.data() + entry.stringOffset;
@@ -855,7 +869,7 @@ bool Pfs0::open(const fs::path& path, StorageKind kind, std::string& error, uint
         const auto terminator = std::find(name, name + max, '\0');
         const size_t length = static_cast<size_t>(terminator - name);
         if (length == max || length == 0) {
-            error = "NSP inválido: nome";
+            error = i18n::tr(i18n::TextId::Pfs0InvalidName);
             return false;
         }
         entries_.push_back({std::string(name, length), dataStart + entry.offset, entry.size});
@@ -870,7 +884,7 @@ const Pfs0Entry* Pfs0::find(const std::string& name) const {
 }
 
 bool Pfs0::read(const Pfs0Entry& entry, uint64_t offset, void* buffer, size_t size, std::string& error) const {
-    if (!valid_ || offset > entry.size || size > entry.size - offset) { error = "leitura NSP fora dos limites"; return false; }
+    if (!valid_ || offset > entry.size || size > entry.size - offset) { error = i18n::tr(i18n::TextId::Pfs0ReadOutOfBounds); return false; }
     LocalFile input;
     return input.open(path_, kind_, false, error, segmentSize_) && input.readAt(entry.offset + offset, buffer, size, error);
 }

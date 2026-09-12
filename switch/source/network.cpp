@@ -1,4 +1,5 @@
 #include "switchdrive/network.hpp"
+#include "switchdrive/i18n.hpp"
 
 #include <curl/curl.h>
 #include <jansson.h>
@@ -50,7 +51,7 @@ size_t writeDownload(void* contents, size_t size, size_t count, void* pointer) {
     if (context->alreadyComplete) return bytes;
     if (!context->bodyAllowed) {
         context->rejected = true;
-        if (context->rejection.empty()) context->rejection = "resposta HTTP não autorizou escrita";
+        if (context->rejection.empty()) context->rejection = i18n::tr(i18n::TextId::HttpWriteNotAllowed);
         return 0;
     }
     std::string error;
@@ -100,7 +101,7 @@ size_t captureDownloadHeader(char* buffer, size_t size, size_t count, void* user
         const RangeResponse range = validateRangeResponse(context->status, context->contentRange, context->resumeAt, context->expectedSize);
         if (range == RangeResponse::Reject) {
             context->rejected = true;
-            context->rejection = "servidor não confirmou a faixa do download";
+            context->rejection = i18n::tr(i18n::TextId::ServerRangeNotConfirmed);
             return size * count;
         }
         if (range == RangeResponse::AlreadyComplete) {
@@ -109,7 +110,7 @@ size_t captureDownloadHeader(char* buffer, size_t size, size_t count, void* user
         }
         if (context->headersAccepted && !context->headersAccepted(context->etag)) {
             context->rejected = true;
-            context->rejection = "não foi possível registrar a resposta do download";
+            context->rejection = i18n::tr(i18n::TextId::ResponseSaveFailed);
             return size * count;
         }
         context->bodyAllowed = true;
@@ -148,7 +149,7 @@ bool configure(CURL* curl, const std::vector<std::string>& headers, curl_slist*&
 json_t* parse(const std::string& text, std::string& error) {
     json_error_t details{};
     json_t* root = json_loadb(text.data(), text.size(), 0, &details);
-    if (!root) error = "JSON inválido do serviço";
+    if (!root) error = i18n::tr(i18n::TextId::InvalidServiceJson);
     return root;
 }
 
@@ -176,7 +177,7 @@ uint64_t integerOrString(json_t* object, const char* key) {
 bool HttpClient::get(const std::string& url, const std::vector<std::string>& headers, Response& out, std::string& error) const {
     CURL* curl = curl_easy_init();
     if (!curl) {
-        error = "curl indisponível";
+        error = i18n::tr(i18n::TextId::CurlUnavailable);
         return false;
     }
     curl_slist* list = nullptr;
@@ -200,7 +201,7 @@ bool HttpClient::get(const std::string& url, const std::vector<std::string>& hea
 bool HttpClient::post(const std::string& url, const std::string& body, const std::vector<std::string>& headers, Response& out, std::string& error) const {
     CURL* curl = curl_easy_init();
     if (!curl) {
-        error = "curl indisponível";
+        error = i18n::tr(i18n::TextId::CurlUnavailable);
         return false;
     }
     auto all = headers;
@@ -227,7 +228,7 @@ bool HttpClient::post(const std::string& url, const std::string& body, const std
 bool HttpClient::download(const std::string& url, const std::vector<std::string>& headers, LocalFile& output, uint64_t resumeAt, uint64_t expectedSize, const std::string& ifRange, std::function<bool(const std::string&)> headersAccepted, std::function<bool(uint64_t)> progress, DownloadResult& result, std::string& error) const {
     CURL* curl = curl_easy_init();
     if (!curl) {
-        error = "curl indisponível";
+        error = i18n::tr(i18n::TextId::CurlUnavailable);
         return false;
     }
     auto all = headers;
@@ -250,12 +251,12 @@ bool HttpClient::download(const std::string& url, const std::vector<std::string>
     result.etag = context.etag;
     if (context.stopped) {
         result.status = DownloadStatus::Paused;
-        error = "download pausado";
+        error = i18n::tr(i18n::TextId::DownloadPaused);
         return false;
     }
     if (context.rejected) {
         result.status = DownloadStatus::RangeRejected;
-        error = context.rejection.empty() ? "faixa de download recusada" : context.rejection;
+        error = context.rejection.empty() ? i18n::tr(i18n::TextId::RangeDenied) : context.rejection;
         return false;
     }
     if (curlResult != CURLE_OK) {
@@ -269,7 +270,7 @@ bool HttpClient::download(const std::string& url, const std::vector<std::string>
     }
     if (!context.bodyAllowed || context.nextOffset != expectedSize) {
         result.status = DownloadStatus::Failed;
-        error = "tamanho baixado diferente do esperado";
+        error = i18n::tr(i18n::TextId::DownloadSizeMismatch);
         return false;
     }
     result.status = DownloadStatus::Completed;
@@ -284,7 +285,7 @@ bool AuthClient::begin(const std::string& consoleKey, std::string& id, std::stri
     id = str(root, "id"); url = str(root, "verificationUri"); code = str(root, "code"); pollSecret = str(root, "pollSecret");
     json_decref(root);
     if (id.empty() || url.empty() || code.empty() || pollSecret.empty()) {
-        error = "resposta de pareamento incompleta";
+        error = i18n::tr(i18n::TextId::PairingResponseIncomplete);
         return false;
     }
     return true;
@@ -297,7 +298,7 @@ bool AuthClient::poll(const std::string& id, const std::string& pollSecret, Acco
     if (!root) return false;
     if (str(root, "status") != "approved") {
         json_decref(root);
-        error = "aguardando autorização";
+        error = i18n::tr(i18n::TextId::AwaitingAuthorization);
         return false;
     }
     json_t* data = json_object_get(root, "account");
@@ -338,7 +339,7 @@ bool AuthClient::accessToken(const std::string& session, const std::string& acco
     token = str(root, "accessToken");
     json_decref(root);
     if (token.empty()) {
-        error = "token de acesso ausente";
+        error = i18n::tr(i18n::TextId::AccessTokenMissing);
         return false;
     }
     return true;
@@ -347,7 +348,7 @@ bool AuthClient::accessToken(const std::string& session, const std::string& acco
 bool DriveClient::list(const std::string& accessToken, const std::string& folderId, bool sharedWithMe, const std::string& pageToken, std::vector<RemoteFile>& files, std::string& nextPage, std::string& error) const {
     CURL* curl = curl_easy_init();
     if (!curl) {
-        error = "curl indisponível";
+        error = i18n::tr(i18n::TextId::CurlUnavailable);
         return false;
     }
     const std::string query = sharedWithMe ? "sharedWithMe and trashed = false" : "'" + folderId + "' in parents and trashed = false";

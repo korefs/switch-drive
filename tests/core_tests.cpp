@@ -1,4 +1,5 @@
 #include "switchdrive/core.hpp"
+#include "switchdrive/i18n.hpp"
 #include "switchdrive/network.hpp"
 
 #include <array>
@@ -11,6 +12,7 @@
 
 namespace fs = std::filesystem;
 using namespace switchdrive;
+using namespace switchdrive::i18n;
 
 #pragma pack(push, 1)
 struct Header { char magic[4]; uint32_t count, strings, reserved; };
@@ -18,6 +20,22 @@ struct Entry { uint64_t offset, size; uint32_t nameOffset, reserved; };
 #pragma pack(pop)
 
 int main() {
+    for (const auto language : {Language::EnUs, Language::PtBr, Language::EsEs}) {
+        setLanguage(language);
+        for (size_t index = 0; index < textCount(); ++index) assert(std::strlen(tr(static_cast<TextId>(index))) > 0);
+    }
+    assert(parseLanguage("invalid") == Language::EnUs);
+    setLanguage(Language::EnUs);
+    assert(std::string(tr(TextId::Files)) == "Files");
+    setLanguage(Language::PtBr);
+    assert(std::string(tr(TextId::Files)) == "Arquivos");
+    assert(std::string(nspContentKindName(NspContentKind::Update)) == "Atualização");
+    assert(std::string(nspInstallStorageName(NspInstallStorage::InternalUser)) == "Memória interna");
+    setLanguage(Language::EsEs);
+    assert(std::string(tr(TextId::Files)) == "Archivos");
+    assert(std::string(nspContentKindName(NspContentKind::Update)) == "Actualización");
+    assert(std::string(nspInstallStorageName(NspInstallStorage::InternalUser)) == "Memoria interna");
+    setLanguage(Language::EnUs);
     assert(sanitizeFileName("../Mario Kart: 8.nsp") == "..Mario_Kart_8.nsp");
     assert(extensionOf("DEMO.NRO") == ".nro");
     assert(isNsp("x.nsp") && !isNsp("x.nsz"));
@@ -65,6 +83,7 @@ int main() {
     saved.serviceUrl = "https://drive.test";
     saved.sessionToken = "not-a-real-token";
     saved.deleteAfterInstall = false;
+    saved.language = "es-ES";
     Task task;
     task.id = "task1";
     task.accountId = "a1";
@@ -93,9 +112,16 @@ int main() {
     saved.library.push_back(library);
     assert(store.save(saved, error));
     State loaded = store.load();
-    assert(loaded.schemaVersion == 3 && loaded.tasks.size() == 1 && loaded.library.size() == 1);
+    assert(loaded.schemaVersion == 4 && loaded.language == "es-ES" && loaded.tasks.size() == 1 && loaded.library.size() == 1);
     assert(loaded.tasks[0].committedBytes == task.committedBytes && loaded.tasks[0].storageKind == StorageKind::Concatenated);
     assert(loaded.tasks[0].revision == "42" && loaded.tasks[0].etag == "\"etag\"");
+    for (const char* language : {"en-US", "pt-BR", "es-ES"}) {
+        State languageState;
+        languageState.language = language;
+        StateStore languageStore(root / (std::string("language-") + language));
+        assert(languageStore.save(languageState, error));
+        assert(languageStore.load().schemaVersion == 4 && languageStore.load().language == language);
+    }
 
     // Existing schema v1 state keeps its catalog entries and adopts regular storage.
     const auto v1Root = root / "state-v1";
@@ -105,7 +131,22 @@ int main() {
         v1 << "{\"schemaVersion\":1,\"serviceUrl\":\"https://drive.test\",\"library\":[{\"id\":\"old\",\"accountId\":\"a\",\"remoteId\":\"r\",\"name\":\"old.nsp\",\"localPath\":\"/tmp/old.nsp\",\"md5\":\"x\"}]}";
     }
     State migrated = StateStore(v1Root).load();
-    assert(migrated.schemaVersion == 3 && migrated.library.size() == 1 && migrated.library[0].storageKind == StorageKind::Regular && migrated.library[0].nspInstallState == NspInstallState::None && migrated.tasks.empty());
+    assert(migrated.schemaVersion == 4 && migrated.language == "en-US" && migrated.library.size() == 1 && migrated.library[0].storageKind == StorageKind::Regular && migrated.library[0].nspInstallState == NspInstallState::None && migrated.tasks.empty());
+
+    const auto v2Root = root / "state-v2-migration";
+    fs::create_directories(v2Root);
+    { std::ofstream v2(v2Root / "state.json"); v2 << "{\"schemaVersion\":2,\"tasks\":[]}"; }
+    assert(StateStore(v2Root).load().schemaVersion == 4 && StateStore(v2Root).load().language == "en-US");
+
+    const auto v3Root = root / "state-v3";
+    fs::create_directories(v3Root);
+    { std::ofstream v3(v3Root / "state.json"); v3 << "{\"schemaVersion\":3}"; }
+    assert(StateStore(v3Root).load().schemaVersion == 4 && StateStore(v3Root).load().language == "en-US");
+    const auto invalidLanguageRoot = root / "state-invalid-language";
+    fs::create_directories(invalidLanguageRoot);
+    { std::ofstream invalid(invalidLanguageRoot / "state.json"); invalid << "{\"schemaVersion\":4,\"language\":\"es-es\"}"; }
+    assert(StateStore(invalidLanguageRoot).load().language == "en-US");
+    assert(nextLanguage(Language::EnUs) == Language::PtBr && nextLanguage(Language::PtBr) == Language::EsEs && nextLanguage(Language::EsEs) == Language::EnUs);
 
     NspPackageInfo policy;
     policy.kind = NspContentKind::Update; policy.metaId = "0100000000000800"; policy.version = 12;
