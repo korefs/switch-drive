@@ -4,7 +4,7 @@
 #include "switchdrive/core.hpp"
 
 #include <array>
-#include <cstdio>
+#include <filesystem>
 #include <cstring>
 
 #ifdef __SWITCH__
@@ -13,29 +13,53 @@
 
 namespace fs = std::filesystem;
 namespace switchdrive {
+namespace {
+
+bool copyLogicalFile(const fs::path& source, StorageKind sourceKind, const fs::path& destination, std::string& error) {
+    LocalFile input;
+    if (!input.open(source, sourceKind, false, error)) return false;
+    uint64_t size{};
+    if (!input.size(size, error)) return false;
+    LocalFile output;
+    if (!output.create(destination, StorageKind::Regular, error)) return false;
+    std::array<unsigned char, 256 * 1024> buffer{};
+    for (uint64_t offset = 0; offset < size;) {
+        const size_t chunk = static_cast<size_t>(std::min<uint64_t>(buffer.size(), size - offset));
+        if (!input.readAt(offset, buffer.data(), chunk, error) || !output.writeAt(offset, buffer.data(), chunk, error)) return false;
+        offset += chunk;
+    }
+    return output.flush(error);
+}
+
+} // namespace
 
 bool NroInstaller::validate(const fs::path& source, std::string& error) const {
-    std::ifstream input(source, std::ios::binary); std::array<char, 0x20> header{}; input.read(header.data(), header.size());
-    if (!input || std::memcmp(header.data(), "NRO0", 4) != 0) { error = "NRO inválido: cabeçalho NRO0 ausente"; return false; }
-    std::error_code ec; const auto size = fs::file_size(source, ec); if (ec || size < 0x80 || size > 1024ULL*1024*1024) { error = "NRO inválido: tamanho fora do limite"; return false; }
+    LocalFile input;
+    uint64_t size{};
+    if (!input.open(source, StorageKind::Regular, false, error) || !input.size(size, error)) return false;
+    std::array<char, 4> magic{};
+    if (!input.readAt(0x10, magic.data(), magic.size(), error) || std::memcmp(magic.data(), "NRO0", 4) != 0) { error = "NRO inválido: cabeçalho NRO0 ausente"; return false; }
+    if (size < 0x80 || size > 1024ULL*1024*1024) { error = "NRO inválido: tamanho fora do limite"; return false; }
     return true;
 }
 bool NroInstaller::install(const fs::path& source, const fs::path& destination, bool replace, std::string& error) const {
     if (!validate(source,error)) return false; std::error_code ec; fs::create_directories(destination.parent_path(),ec); if(ec){error=ec.message();return false;}
     if (fs::exists(destination,ec) && !replace) { error = "Já existe uma homebrew com esse nome"; return false; }
-    const auto temporary = destination.string()+".tmp"; fs::copy_file(source,temporary,fs::copy_options::overwrite_existing,ec); if(ec){error=ec.message();return false;}
+    const auto temporary = destination.string()+".tmp";
+    if (LocalFile::exists(temporary, StorageKind::Regular) && !LocalFile::remove(temporary, StorageKind::Regular, error)) return false;
+    if (!copyLogicalFile(source, StorageKind::Regular, temporary, error)) return false;
     fs::rename(temporary,destination,ec); if(ec){fs::remove(destination,ec);ec.clear();fs::rename(temporary,destination,ec);} if(ec){error=ec.message();return false;} return true;
 }
-bool NroInstaller::uninstall(const fs::path& destination, std::string& error) const { std::error_code ec; if (!fs::remove(destination,ec) && ec) { error=ec.message(); return false; } return true; }
+bool NroInstaller::uninstall(const fs::path& destination, std::string& error) const { return LocalFile::remove(destination, StorageKind::Regular, error); }
 
-bool NspInstaller::validate(const fs::path& source, std::string& error) const {
-    Pfs0 pfs0; if (!pfs0.open(source,error)) return false; bool hasMeta=false, hasNca=false;
+bool NspInstaller::validate(const fs::path& source, StorageKind kind, std::string& error, uint64_t segmentSize) const {
+    Pfs0 pfs0; if (!pfs0.open(source, kind, error, segmentSize)) return false; bool hasMeta=false, hasNca=false;
     for (const auto& entry : pfs0.entries()) { if (extensionOf(entry.name)==".nca") hasNca=true; if (entry.name.size()>=8 && entry.name.ends_with(".cnmt.nca")) hasMeta=true; }
     if (!hasNca || !hasMeta) { error="NSP inválido: faltam NCA ou CNMT"; return false; } return true;
 }
 
-bool NspInstaller::install(const fs::path& source, std::string& contentId, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const {
-    if (!validate(source,error)) return false;
+bool NspInstaller::install(const fs::path& source, StorageKind kind, std::string& contentId, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const {
+    if (!validate(source,kind,error)) return false;
 #ifndef __SWITCH__
     (void)progress; error = "Instalação NSP exige um Nintendo Switch com Atmosphère"; return false;
 #else
