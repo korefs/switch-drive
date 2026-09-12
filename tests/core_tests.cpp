@@ -93,7 +93,7 @@ int main() {
     saved.library.push_back(library);
     assert(store.save(saved, error));
     State loaded = store.load();
-    assert(loaded.schemaVersion == 2 && loaded.tasks.size() == 1 && loaded.library.size() == 1);
+    assert(loaded.schemaVersion == 3 && loaded.tasks.size() == 1 && loaded.library.size() == 1);
     assert(loaded.tasks[0].committedBytes == task.committedBytes && loaded.tasks[0].storageKind == StorageKind::Concatenated);
     assert(loaded.tasks[0].revision == "42" && loaded.tasks[0].etag == "\"etag\"");
 
@@ -105,7 +105,23 @@ int main() {
         v1 << "{\"schemaVersion\":1,\"serviceUrl\":\"https://drive.test\",\"library\":[{\"id\":\"old\",\"accountId\":\"a\",\"remoteId\":\"r\",\"name\":\"old.nsp\",\"localPath\":\"/tmp/old.nsp\",\"md5\":\"x\"}]}";
     }
     State migrated = StateStore(v1Root).load();
-    assert(migrated.schemaVersion == 2 && migrated.library.size() == 1 && migrated.library[0].storageKind == StorageKind::Regular && migrated.tasks.empty());
+    assert(migrated.schemaVersion == 3 && migrated.library.size() == 1 && migrated.library[0].storageKind == StorageKind::Regular && migrated.library[0].nspInstallState == NspInstallState::None && migrated.tasks.empty());
+
+    NspPackageInfo policy;
+    policy.kind = NspContentKind::Update; policy.metaId = "0100000000000800"; policy.version = 12;
+    std::vector<InstalledNspInfo> installed{{true, NspInstallStorage::SdCard, 11, policy.metaId, "0100000000000000", NspContentKind::Update}};
+    assert(decideNspInstall(policy, installed) == NspInstallDecision::Install);
+    policy.version = 11; assert(decideNspInstall(policy, installed) == NspInstallDecision::AlreadyInstalled);
+    policy.version = 10; assert(decideNspInstall(policy, installed) == NspInstallDecision::DowngradeBlocked);
+
+    NspInstallJournal savedJournal;
+    savedJournal.operation = "install"; savedJournal.libraryId = "id1"; savedJournal.phase = "prepared";
+    savedJournal.package = policy; savedJournal.package.metaId = "0100000000000800";
+    savedJournal.contents.push_back({"00112233445566778899aabbccddeeff", "ffeeddccbbaa99887766554433221100", true});
+    assert(store.saveInstallJournal(savedJournal, error));
+    NspInstallJournal loadedJournal; bool journalExists = false;
+    assert(store.loadInstallJournal(loadedJournal, error, journalExists) && journalExists && loadedJournal.contents.size() == 1 && loadedJournal.package.metaId == savedJournal.package.metaId);
+    assert(store.clearInstallJournal(error));
 
     assert(validateRangeResponse(200, "", 0, 100) == RangeResponse::AcceptBody);
     assert(validateRangeResponse(206, "bytes 40-99/100", 40, 100) == RangeResponse::AcceptBody);
@@ -136,6 +152,21 @@ int main() {
     assert(parser.entries().size() == 2 && parser.entries()[0].name == "a.cnmt.nca");
     NspInstaller nsp;
     assert(nsp.validate(pfsPath, StorageKind::Concatenated, error, 16));
+
+    // CNMT parsing is host-testable even though opening an encrypted CNMT NCA is Switch-only.
+    struct RawHeader { uint64_t id; uint32_t version; uint8_t type, platform; uint16_t ext, count, metaCount; uint8_t attributes, storage, installType, committed; uint32_t required; uint8_t reserved[4]; } __attribute__((packed));
+    struct RawContent { uint8_t id[16]; uint32_t low; uint8_t high, attributes, type, offset; } __attribute__((packed));
+    struct RawPackaged { uint8_t hash[32]; RawContent info; } __attribute__((packed));
+    struct RawPatch { uint64_t applicationId; uint32_t requiredSystem, extendedData; uint8_t reserved[8]; } __attribute__((packed));
+    RawHeader rawHeader{0x0100000000000800ULL, 65536, 0x81, 0, static_cast<uint16_t>(sizeof(RawPatch)), 1, 0, 0, 0, 0, 0, 0, {}};
+    RawPatch rawPatch{0x0100000000000000ULL, 0, 0, {}};
+    RawPackaged rawContent{}; rawContent.info.id[0] = 0xab; rawContent.info.low = 123; rawContent.info.type = 1;
+    std::vector<uint8_t> cnmt(sizeof(rawHeader) + sizeof(rawPatch) + sizeof(rawContent));
+    std::memcpy(cnmt.data(), &rawHeader, sizeof(rawHeader)); std::memcpy(cnmt.data() + sizeof(rawHeader), &rawPatch, sizeof(rawPatch)); std::memcpy(cnmt.data() + sizeof(rawHeader) + sizeof(rawPatch), &rawContent, sizeof(rawContent));
+    NspPackageInfo parsed;
+    assert(nsp.parseCnmt(cnmt.data(), cnmt.size(), parsed, error));
+    assert(parsed.kind == NspContentKind::Update && parsed.baseTitleId == "0100000000000000" && parsed.metaId == "0100000000000800" && parsed.contents.size() == 1);
+    assert(!nsp.parseCnmt(cnmt.data(), sizeof(rawHeader), parsed, error));
 
     assert(LocalFile::remove(logicalPath, StorageKind::Concatenated, error));
     assert(LocalFile::remove(pfsPath, StorageKind::Concatenated, error));

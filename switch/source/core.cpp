@@ -67,6 +67,41 @@ const char* installKindName(InstallKind kind) {
     return "none";
 }
 
+const char* nspKindName(NspContentKind kind) {
+    switch (kind) {
+        case NspContentKind::BaseGame: return "base";
+        case NspContentKind::Update: return "update";
+        case NspContentKind::Dlc: return "dlc";
+        default: return "unknown";
+    }
+}
+NspContentKind parseNspKind(const std::string& value) {
+    if (value == "base") return NspContentKind::BaseGame;
+    if (value == "update") return NspContentKind::Update;
+    if (value == "dlc") return NspContentKind::Dlc;
+    return NspContentKind::Unknown;
+}
+const char* nspStorageName(NspInstallStorage storage) { return storage == NspInstallStorage::InternalUser ? "internal" : "sd"; }
+NspInstallStorage parseNspStorage(const std::string& value) { return value == "internal" ? NspInstallStorage::InternalUser : NspInstallStorage::SdCard; }
+const char* nspStateName(NspInstallState state) {
+    switch (state) {
+        case NspInstallState::Pending: return "pending";
+        case NspInstallState::Installing: return "installing";
+        case NspInstallState::Installed: return "installed";
+        case NspInstallState::Failed: return "failed";
+        case NspInstallState::Unverified: return "unverified";
+        default: return "none";
+    }
+}
+NspInstallState parseNspState(const std::string& value) {
+    if (value == "pending") return NspInstallState::Pending;
+    if (value == "installing") return NspInstallState::Installing;
+    if (value == "installed") return NspInstallState::Installed;
+    if (value == "failed") return NspInstallState::Failed;
+    if (value == "unverified") return NspInstallState::Unverified;
+    return NspInstallState::None;
+}
+
 InstallKind parseInstallKind(const std::string& value) {
     if (value == "nro") return InstallKind::Nro;
     if (value == "nsp") return InstallKind::Nsp;
@@ -209,6 +244,22 @@ StorageKind storageKindForSize(uint64_t size, uint64_t limit) {
 
 const char* storageKindName(StorageKind kind) {
     return kind == StorageKind::Concatenated ? "concatenated" : "regular";
+}
+const char* nspContentKindName(NspContentKind kind) { return nspKindName(kind); }
+const char* nspInstallStorageName(NspInstallStorage storage) { return nspStorageName(storage); }
+const char* nspInstallStateName(NspInstallState state) { return nspStateName(state); }
+
+NspInstallDecision decideNspInstall(const NspPackageInfo& package, const std::vector<InstalledNspInfo>& installed) {
+    if (package.kind == NspContentKind::Unknown || package.metaId.empty()) return NspInstallDecision::Unsupported;
+    uint32_t highest = 0;
+    bool found = false;
+    for (const auto& item : installed) {
+        if (!item.present || item.metaId != package.metaId || item.kind != package.kind) continue;
+        highest = std::max(highest, item.version);
+        found = true;
+    }
+    if (!found || package.version > highest) return NspInstallDecision::Install;
+    return package.version == highest ? NspInstallDecision::AlreadyInstalled : NspInstallDecision::DowngradeBlocked;
 }
 
 bool fileExists(const std::string& path) { return LocalFile::exists(path, StorageKind::Regular); }
@@ -516,9 +567,9 @@ State StateStore::load() {
     if (!input.good()) return state;
     const std::string json((std::istreambuf_iterator<char>(input)), {});
     const int schemaVersion = static_cast<int>(numberField(json, "schemaVersion"));
-    if (schemaVersion != 1 && schemaVersion != 2) return state;
+    if (schemaVersion != 1 && schemaVersion != 2 && schemaVersion != 3) return state;
 
-    state.schemaVersion = 2;
+    state.schemaVersion = 3;
     state.serviceUrl = stringField(json, "serviceUrl");
     state.consolePublicKey = stringField(json, "consolePublicKey");
     state.sessionToken = stringField(json, "sessionToken");
@@ -544,9 +595,20 @@ State StateStore::load() {
         item.storageKind = stringField(row, "storageKind") == "concatenated" ? StorageKind::Concatenated : StorageKind::Regular;
         item.installedPath = stringField(row, "installedPath");
         item.installedContentId = stringField(row, "installedContentId");
+        if (schemaVersion >= 3) {
+            item.nspContentKind = parseNspKind(stringField(row, "nspContentKind"));
+            item.nspStorage = parseNspStorage(stringField(row, "nspStorage"));
+            item.nspInstallState = parseNspState(stringField(row, "nspInstallState"));
+            item.nspMetaId = stringField(row, "nspMetaId");
+            item.nspBaseTitleId = stringField(row, "nspBaseTitleId");
+            item.nspVersion = static_cast<uint32_t>(numberField(row, "nspVersion"));
+        } else if (item.installed == InstallKind::Nsp) {
+            // v2 never recorded enough identity to safely remove installed NSPs.
+            item.nspInstallState = NspInstallState::Unverified;
+        }
         if (!item.id.empty()) state.library.push_back(std::move(item));
     }
-    if (schemaVersion == 2) {
+    if (schemaVersion >= 2) {
         for (const auto& row : objectRows(json, "tasks")) {
             Task task;
             task.id = stringField(row, "id");
@@ -587,7 +649,7 @@ bool StateStore::save(const State& state, std::string& error) {
         error = "não foi possível abrir o estado temporário";
         return false;
     }
-    output << "{\"schemaVersion\":2,\"serviceUrl\":\"" << escape(state.serviceUrl)
+    output << "{\"schemaVersion\":3,\"serviceUrl\":\"" << escape(state.serviceUrl)
            << "\",\"consolePublicKey\":\"" << escape(state.consolePublicKey)
            << "\",\"sessionToken\":\"" << escape(state.sessionToken)
            << "\",\"lastAccountId\":\"" << escape(state.lastAccountId)
@@ -623,7 +685,10 @@ bool StateStore::save(const State& state, std::string& error) {
                << "\",\"localPath\":\"" << escape(item.localPath) << "\",\"md5\":\"" << escape(item.md5)
                << "\",\"size\":" << item.size << ",\"localState\":\"" << localStateName(item.localState)
                << "\",\"installed\":\"" << installKindName(item.installed) << "\",\"storageKind\":\"" << storageKindName(item.storageKind)
-               << "\",\"installedPath\":\"" << escape(item.installedPath) << "\",\"installedContentId\":\"" << escape(item.installedContentId) << "\"}";
+               << "\",\"installedPath\":\"" << escape(item.installedPath) << "\",\"installedContentId\":\"" << escape(item.installedContentId)
+               << "\",\"nspContentKind\":\"" << nspKindName(item.nspContentKind) << "\",\"nspStorage\":\"" << nspStorageName(item.nspStorage)
+               << "\",\"nspInstallState\":\"" << nspStateName(item.nspInstallState) << "\",\"nspMetaId\":\"" << escape(item.nspMetaId)
+               << "\",\"nspBaseTitleId\":\"" << escape(item.nspBaseTitleId) << "\",\"nspVersion\":" << item.nspVersion << "}";
     }
     output << "]}";
     output.flush();
@@ -649,6 +714,101 @@ bool StateStore::save(const State& state, std::string& error) {
     return !ec;
 }
 
+bool StateStore::loadInstallJournal(NspInstallJournal& journal, std::string& error, bool& exists) const {
+    journal = {};
+    exists = false;
+    const auto current = root_ / "install-journal.json";
+    const auto backup = root_ / "install-journal.json.bak";
+    std::ifstream input(current);
+    if (!input.good()) input.open(backup);
+    if (!input.good()) return true;
+    exists = true;
+    const std::string json((std::istreambuf_iterator<char>(input)), {});
+    if (numberField(json, "journalVersion") != 1) { error = "diário de instalação inválido"; return false; }
+    journal.operation = stringField(json, "operation");
+    journal.libraryId = stringField(json, "libraryId");
+    journal.localPath = stringField(json, "localPath");
+    journal.phase = stringField(json, "phase");
+    journal.targetStorage = parseNspStorage(stringField(json, "targetStorage"));
+    journal.deletePackage = boolField(json, "deletePackage", false);
+    journal.ticketWasPresent = boolField(json, "ticketWasPresent", false);
+    journal.ticketImported = boolField(json, "ticketImported", false);
+    journal.package.kind = parseNspKind(stringField(json, "kind"));
+    journal.package.metaId = stringField(json, "metaId");
+    journal.package.baseTitleId = stringField(json, "baseTitleId");
+    journal.package.version = static_cast<uint32_t>(numberField(json, "version"));
+    for (const auto& row : objectRows(json, "contents")) {
+        NspJournalContent content;
+        content.id = stringField(row, "id"); content.placeholderId = stringField(row, "placeholderId");
+        content.created = boolField(row, "created", false);
+        if (!content.id.empty()) journal.contents.push_back(std::move(content));
+    }
+    for (const auto& row : objectRows(json, "previous")) {
+        InstalledNspInfo previous;
+        previous.present = true;
+        previous.metaId = stringField(row, "metaId"); previous.baseTitleId = stringField(row, "baseTitleId");
+        previous.version = static_cast<uint32_t>(numberField(row, "version"));
+        previous.kind = parseNspKind(stringField(row, "kind")); previous.storage = parseNspStorage(stringField(row, "storage"));
+        if (!previous.metaId.empty()) journal.previous.push_back(std::move(previous));
+    }
+    if (journal.operation.empty() || journal.package.metaId.empty()) { error = "diário de instalação incompleto"; return false; }
+    return true;
+}
+
+bool StateStore::saveInstallJournal(const NspInstallJournal& journal, std::string& error) const {
+    std::error_code ec;
+    fs::create_directories(root_, ec);
+    if (ec) { error = ec.message(); return false; }
+    const auto temporary = root_ / "install-journal.json.tmp";
+    const auto current = root_ / "install-journal.json";
+    const auto backup = root_ / "install-journal.json.bak";
+    std::FILE* output = std::fopen(temporary.string().c_str(), "wb");
+    if (!output) { error = "não foi possível gravar o diário de instalação"; return false; }
+    std::ostringstream data;
+    data << "{\"journalVersion\":1,\"operation\":\"" << escape(journal.operation) << "\",\"libraryId\":\"" << escape(journal.libraryId)
+         << "\",\"localPath\":\"" << escape(journal.localPath) << "\",\"phase\":\"" << escape(journal.phase)
+         << "\",\"targetStorage\":\"" << nspStorageName(journal.targetStorage) << "\",\"deletePackage\":" << (journal.deletePackage ? "true" : "false")
+         << ",\"ticketWasPresent\":" << (journal.ticketWasPresent ? "true" : "false") << ",\"ticketImported\":" << (journal.ticketImported ? "true" : "false")
+         << ",\"kind\":\"" << nspKindName(journal.package.kind) << "\",\"metaId\":\"" << escape(journal.package.metaId)
+         << "\",\"baseTitleId\":\"" << escape(journal.package.baseTitleId) << "\",\"version\":" << journal.package.version << ",\"contents\":[";
+    for (size_t i = 0; i < journal.contents.size(); ++i) {
+        if (i) data << ',';
+        const auto& content = journal.contents[i];
+        data << "{\"id\":\"" << escape(content.id) << "\",\"placeholderId\":\"" << escape(content.placeholderId) << "\",\"created\":" << (content.created ? "true" : "false") << "}";
+    }
+    data << "],\"previous\":[";
+    for (size_t i = 0; i < journal.previous.size(); ++i) {
+        if (i) data << ',';
+        const auto& previous = journal.previous[i];
+        data << "{\"metaId\":\"" << escape(previous.metaId) << "\",\"baseTitleId\":\"" << escape(previous.baseTitleId) << "\",\"version\":" << previous.version << ",\"kind\":\"" << nspKindName(previous.kind) << "\",\"storage\":\"" << nspStorageName(previous.storage) << "\"}";
+    }
+    data << "]}";
+    const std::string encoded = data.str();
+    const bool wrote = std::fwrite(encoded.data(), 1, encoded.size(), output) == encoded.size() && std::fflush(output) == 0 && ::fsync(::fileno(output)) == 0;
+    std::fclose(output);
+    if (!wrote) { error = "falha ao sincronizar o diário de instalação"; return false; }
+    if (fs::exists(current, ec)) { fs::copy_file(current, backup, fs::copy_options::overwrite_existing, ec); if (ec) { error = ec.message(); return false; } }
+    fs::rename(temporary, current, ec);
+    if (ec) { error = ec.message(); return false; }
+#ifdef __SWITCH__
+    const Result rc = fsdevCommitDevice("sdmc");
+    if (R_FAILED(rc)) { error = "não foi possível confirmar o diário no microSD"; return false; }
+#endif
+    return true;
+}
+
+bool StateStore::clearInstallJournal(std::string& error) const {
+    std::error_code ec;
+    fs::remove(root_ / "install-journal.json", ec);
+    if (ec) { error = ec.message(); return false; }
+    fs::remove(root_ / "install-journal.json.bak", ec);
+    if (ec) { error = ec.message(); return false; }
+#ifdef __SWITCH__
+    if (R_FAILED(fsdevCommitDevice("sdmc"))) { error = "não foi possível confirmar a limpeza do diário"; return false; }
+#endif
+    return true;
+}
+
 fs::path StateStore::downloadPath(const Task& task) const {
     return root_ / "downloads" / task.id / sanitizeFileName(task.displayName);
 }
@@ -661,6 +821,9 @@ struct Pfs0RawEntry { uint64_t offset, size; uint32_t stringOffset, reserved; };
 bool Pfs0::open(const fs::path& path, StorageKind kind, std::string& error, uint64_t segmentSize) {
     valid_ = false;
     entries_.clear();
+    path_ = path;
+    kind_ = kind;
+    segmentSize_ = segmentSize;
     LocalFile input;
     if (!input.open(path, kind, false, error, segmentSize)) return false;
     uint64_t total{};
@@ -699,6 +862,17 @@ bool Pfs0::open(const fs::path& path, StorageKind kind, std::string& error, uint
     }
     valid_ = true;
     return true;
+}
+
+const Pfs0Entry* Pfs0::find(const std::string& name) const {
+    const auto it = std::find_if(entries_.begin(), entries_.end(), [&](const Pfs0Entry& entry) { return entry.name == name; });
+    return it == entries_.end() ? nullptr : std::addressof(*it);
+}
+
+bool Pfs0::read(const Pfs0Entry& entry, uint64_t offset, void* buffer, size_t size, std::string& error) const {
+    if (!valid_ || offset > entry.size || size > entry.size - offset) { error = "leitura NSP fora dos limites"; return false; }
+    LocalFile input;
+    return input.open(path_, kind_, false, error, segmentSize_) && input.readAt(entry.offset + offset, buffer, size, error);
 }
 
 } // namespace switchdrive

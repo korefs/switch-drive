@@ -46,7 +46,7 @@ filename.
 | File type                               | Download |     Install | Current state                                                                            |
 | --------------------------------------- | -------: | ----------: | ---------------------------------------------------------------------------------------- |
 | `.nro`                                  |      Yes |         Yes | Standalone homebrew is supported                                                         |
-| `.nsp`                                  |      Yes | In progress | PFS0/NCA/CNMT validation exists; the Goldleaf/NCM installation adapter is not linked yet |
+| `.nsp`                                  |      Yes |         Yes | Installs one base game, update, or DLC through the Goldleaf-derived NCM adapter |
 | `.xci`, `.nsz`, `.zip`, and other files |      Yes |          No | Stored as regular downloads                                                              |
 | Native Google documents                 |       No |          No | Metadata can be listed; export is planned                                                |
 
@@ -57,6 +57,7 @@ filename.
 - **B:** go back.
 - **X:** download the selected Drive file.
 - **Y:** download and install the selected Drive file.
+- **Y in Library:** remove the selected managed NSP component; saves are retained.
 - **L while browsing:** switch between My Drive and Shared with me.
 - **+:** close the app.
 
@@ -64,18 +65,18 @@ filename.
 
 This repository contains an early MVP: the Switch client, the OAuth pairing
 service, Docker deployment files, and host tests for the local state model and
-PFS0 parser. NRO download and installation are implemented. NSP installation
-and uninstallation still require the Goldleaf/NCM adapter before they can work
-on a console. A real console and a private Google Cloud OAuth client are also
-required for final acceptance testing.
+PFS0 parser. NRO and transactional NSP installation are implemented. NSP
+installation requires an Atmosphère console launched in application mode. A real
+console and a private Google Cloud OAuth client are required for final
+acceptance testing.
 
 ## Roadmap
 
 ### Next priorities
 
-1. **Complete NSP installation and removal:** integrate the Goldleaf/NCM
-   adapter, identify base games, updates, and DLC, prevent accidental
-   downgrades, preserve saves, and recover safely from interrupted installs.
+1. **Complete NSP installation and removal:** done for one base game, update,
+   or DLC per NSP, with managed component removal and interrupted-install
+   recovery. Full package signature verification remains planned below.
 2. **Show a QR code on the Switch:** keep the short URL and pairing code as a
    fallback, while allowing the user to scan and authenticate immediately from
    a phone.
@@ -179,6 +180,20 @@ The planned NSP installation adapter follows the NCM installation approach from
 source is kept under `third_party/Goldleaf`, and the integration boundary is in
 `switch/source/installer.cpp`. Goldleaf's license and notices must remain with
 redistributed source and binaries that incorporate its code.
+
+## NSP safety
+
+Before writing content, Switch Drive identifies a base game, update, or DLC
+from its CNMT, shows its title ID and version, and asks for microSD or internal
+user storage. It blocks downgrades and treats an equal version as already
+installed. Existing content stays in place until replacement metadata commits.
+An `install-journal.json` is recovered on the next launch if the app is
+interrupted. Managed removal removes only that component and never calls
+save-data deletion APIs.
+
+Install only trusted packages. NSP installation requires Atmosphère and any
+appropriate FS patches; execute Switch Drive by holding R while launching a
+game, not as a restricted applet.
 
 ## Tests
 

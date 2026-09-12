@@ -17,6 +17,10 @@ enum class TaskState { Queued, Downloading, Paused, Verifying, Installing, Compl
 enum class LocalState { Present, RemovedAfterInstall, Missing, NotDownloaded };
 enum class InstallKind { None, Nro, Nsp };
 enum class StorageKind { Regular, Concatenated };
+enum class NspContentKind { Unknown, BaseGame, Update, Dlc };
+enum class NspInstallStorage { SdCard, InternalUser };
+enum class NspInstallState { None, Pending, Installing, Installed, Failed, Unverified };
+enum class NspInstallDecision { Install, AlreadyInstalled, DowngradeBlocked, Unsupported };
 
 constexpr uint64_t kFat32FileLimit = 4ULL * 1024ULL * 1024ULL * 1024ULL;
 
@@ -43,9 +47,45 @@ struct LibraryItem {
     InstallKind installed{InstallKind::None};
     StorageKind storageKind{StorageKind::Regular};
     std::string installedPath, installedContentId;
+    NspContentKind nspContentKind{NspContentKind::Unknown};
+    NspInstallStorage nspStorage{NspInstallStorage::SdCard};
+    NspInstallState nspInstallState{NspInstallState::None};
+    std::string nspMetaId, nspBaseTitleId;
+    uint32_t nspVersion{};
+};
+
+struct NspContentEntry { std::string id; uint64_t size{}; uint8_t type{}; };
+struct NspPackageInfo {
+    NspContentKind kind{NspContentKind::Unknown};
+    std::string metaId, baseTitleId, metaNcaId;
+    uint32_t version{}, requiredSystemVersion{}, requiredApplicationVersion{};
+    uint8_t keyGeneration{};
+    uint8_t attributes{};
+    uint64_t totalInstallBytes{};
+    std::vector<NspContentEntry> contents;
+    std::vector<uint8_t> extendedHeader;
+    bool hasTicket{};
+};
+struct InstalledNspInfo {
+    bool present{};
+    NspInstallStorage storage{NspInstallStorage::SdCard};
+    uint32_t version{};
+    std::string metaId, baseTitleId;
+    NspContentKind kind{NspContentKind::Unknown};
+};
+// This compact journal is intentionally independent of normal library state.
+// NCM recovery trusts live metadata, not the phase string.
+struct NspJournalContent { std::string id, placeholderId; bool created{}; };
+struct NspInstallJournal {
+    std::string operation, libraryId, localPath, phase;
+    NspPackageInfo package;
+    NspInstallStorage targetStorage{NspInstallStorage::SdCard};
+    std::vector<NspJournalContent> contents;
+    std::vector<InstalledNspInfo> previous;
+    bool deletePackage{}, ticketWasPresent{}, ticketImported{};
 };
 struct State {
-    int schemaVersion{2};
+    int schemaVersion{3};
     std::string serviceUrl, consolePublicKey, sessionToken, lastAccountId, lastFolderId;
     bool deleteAfterInstall{true};
     std::vector<Account> accounts;
@@ -62,6 +102,10 @@ bool fileExists(const std::string& path);
 uint64_t fileSize(const std::string& path);
 StorageKind storageKindForSize(uint64_t size, uint64_t limit = kFat32FileLimit);
 const char* storageKindName(StorageKind kind);
+const char* nspContentKindName(NspContentKind kind);
+const char* nspInstallStorageName(NspInstallStorage storage);
+const char* nspInstallStateName(NspInstallState state);
+NspInstallDecision decideNspInstall(const NspPackageInfo& package, const std::vector<InstalledNspInfo>& installed);
 
 // A logical file can be regular or concatenated. On Switch, concatenated files
 // are provided by HOS as one path; the host implementation emulates segments so
@@ -106,6 +150,9 @@ class StateStore {
     explicit StateStore(std::filesystem::path root) : root_(std::move(root)) {}
     State load();
     bool save(const State& state, std::string& error);
+    bool loadInstallJournal(NspInstallJournal& journal, std::string& error, bool& exists) const;
+    bool saveInstallJournal(const NspInstallJournal& journal, std::string& error) const;
+    bool clearInstallJournal(std::string& error) const;
     std::filesystem::path downloadPath(const Task& task) const;
   private:
     std::filesystem::path root_;
@@ -117,10 +164,15 @@ class Pfs0 {
     bool open(const std::filesystem::path& path, StorageKind kind, std::string& error, uint64_t segmentSize = kFat32FileLimit);
     bool open(const std::filesystem::path& path, std::string& error) { return open(path, StorageKind::Regular, error); }
     const std::vector<Pfs0Entry>& entries() const { return entries_; }
+    const Pfs0Entry* find(const std::string& name) const;
+    bool read(const Pfs0Entry& entry, uint64_t offset, void* buffer, size_t size, std::string& error) const;
     bool valid() const { return valid_; }
   private:
     std::vector<Pfs0Entry> entries_;
     bool valid_{};
+    std::filesystem::path path_;
+    StorageKind kind_{StorageKind::Regular};
+    uint64_t segmentSize_{kFat32FileLimit};
 };
 
 class NroInstaller {
@@ -137,6 +189,12 @@ class NspInstaller {
   public:
     bool validate(const std::filesystem::path& source, StorageKind kind, std::string& error, uint64_t segmentSize = kFat32FileLimit) const;
     bool validate(const std::filesystem::path& source, std::string& error) const { return validate(source, StorageKind::Regular, error); }
+    bool inspect(const std::filesystem::path& source, StorageKind kind, NspPackageInfo& info, std::string& error, uint64_t segmentSize = kFat32FileLimit) const;
+    bool parseCnmt(const void* data, size_t size, NspPackageInfo& info, std::string& error) const;
+    bool queryInstalled(const NspPackageInfo& package, std::vector<InstalledNspInfo>& installed, std::string& error) const;
+    bool install(const std::filesystem::path& source, StorageKind kind, const NspPackageInfo& package, NspInstallStorage destination, StateStore& store, NspInstallJournal& journal, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const;
+    bool recover(StateStore& store, NspInstallJournal& journal, std::string& error) const;
+    bool uninstall(const InstalledNspInfo& target, StateStore& store, NspInstallJournal& journal, std::string& error) const;
     bool install(const std::filesystem::path& source, StorageKind kind, std::string& contentId, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const;
     bool install(const std::filesystem::path& source, std::string& contentId, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const { return install(source, StorageKind::Regular, contentId, std::move(progress), error); }
     bool uninstall(const std::string& contentId, std::string& error) const;

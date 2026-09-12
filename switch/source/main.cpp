@@ -42,6 +42,24 @@ void waitForButton() {
     }
 }
 
+bool chooseNspDestination(const NspPackageInfo& package, const std::vector<InstalledNspInfo>& installed, NspInstallStorage& destination) {
+    destination = NspInstallStorage::SdCard;
+    while (appletMainLoop()) {
+        title("Instalar NSP");
+        printf("%s\n", package.kind == NspContentKind::BaseGame ? "Jogo base" : package.kind == NspContentKind::Update ? "Atualização" : "DLC");
+        printf("Título: %s\nVersão: %u\n", package.baseTitleId.c_str(), package.version);
+        if (!installed.empty()) printf("Instalado: versão %u (%s)\n", installed.front().version, nspInstallStorageName(installed.front().storage));
+        printf("\n%s microSD\n%s Memória interna\n", destination == NspInstallStorage::SdCard ? ">" : " ", destination == NspInstallStorage::InternalUser ? ">" : " ");
+        hint("A: confirmar  B: cancelar  Cima/Baixo: destino");
+        hidScanInput(); const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO);
+        if (pressed & (HidNpadButton_Up | HidNpadButton_Down)) destination = destination == NspInstallStorage::SdCard ? NspInstallStorage::InternalUser : NspInstallStorage::SdCard;
+        if (pressed & HidNpadButton_A) return true;
+        if (pressed & HidNpadButton_B) return false;
+        consoleUpdate(nullptr);
+    }
+    return false;
+}
+
 std::string configServiceUrl() {
     std::ifstream input(std::string(kRoot) + "/config.json");
     const std::string config((std::istreambuf_iterator<char>(input)), {});
@@ -274,11 +292,27 @@ void installIfRequested(StateStore& store, State& state, Task& task) {
         }
     } else if (isNsp(task.displayName)) {
         NspInstaller installer;
-        std::string contentId;
-        installed = installer.install(task.localPath, task.storageKind, contentId, [](uint64_t, uint64_t) { return true; }, error);
+        NspPackageInfo package;
+        std::vector<InstalledNspInfo> existing;
+        installed = installer.inspect(task.localPath, task.storageKind, package, error) && installer.queryInstalled(package, existing, error);
         if (installed) {
-            library->installed = InstallKind::Nsp;
-            library->installedContentId = contentId;
+            const auto decision = decideNspInstall(package, existing);
+            if (decision == NspInstallDecision::DowngradeBlocked) { installed = false; error = "Atualização recusada: a versão instalada é mais nova"; }
+            else if (decision == NspInstallDecision::AlreadyInstalled) {
+                library->installed = InstallKind::Nsp; library->nspContentKind = package.kind; library->nspMetaId = package.metaId; library->nspBaseTitleId = package.baseTitleId; library->nspVersion = package.version; library->nspInstallState = NspInstallState::Installed;
+            } else {
+                NspInstallStorage destination;
+                if (!chooseNspDestination(package, existing, destination)) return;
+                NspInstallJournal journal; journal.libraryId = library->id; journal.localPath = task.localPath; journal.deletePackage = task.deleteAfterInstall;
+                library->nspInstallState = NspInstallState::Installing; saveOrShow(store, state);
+                installed = installer.install(task.localPath, task.storageKind, package, destination, store, journal, [](uint64_t current, uint64_t total) { printf("\rInstalando %llu / %llu bytes", static_cast<unsigned long long>(current), static_cast<unsigned long long>(total)); consoleUpdate(nullptr); return appletMainLoop(); }, error);
+                if (installed) {
+                    library->installed = InstallKind::Nsp; library->installedContentId = package.metaId; library->nspContentKind = package.kind; library->nspStorage = destination; library->nspMetaId = package.metaId; library->nspBaseTitleId = package.baseTitleId; library->nspVersion = package.version; library->nspInstallState = NspInstallState::Installed;
+                } else library->nspInstallState = NspInstallState::Failed;
+            }
+        }
+        if (installed) {
+            library->nspInstallState = NspInstallState::Installed;
         }
     } else {
         return;
@@ -460,6 +494,18 @@ void recoverTasks(StateStore& store, State& state) {
     if (changed) saveOrShow(store, state);
 }
 
+void recoverInstallJournal(StateStore& store, State& state) {
+    NspInstallJournal journal; std::string error; bool exists = false;
+    if (!store.loadInstallJournal(journal, error, exists)) { title("Recuperação NSP"); printf("%s\nNenhuma instalação NSP será iniciada.\n", error.c_str()); waitForButton(); return; }
+    if (!exists) return;
+    const NspInstallJournal recovered = journal;
+    NspInstaller installer;
+    if (!installer.recover(store, journal, error)) { title("Recuperação NSP"); printf("%s\n", error.c_str()); waitForButton(); return; }
+    const auto it = std::find_if(state.library.begin(), state.library.end(), [&](const LibraryItem& item) { return item.id == recovered.libraryId; });
+    if (it != state.library.end() && recovered.operation == "install") it->nspInstallState = recovered.phase == "committed" ? NspInstallState::Installed : NspInstallState::Failed;
+    saveOrShow(store, state);
+}
+
 void browse(StateStore& store, State& state) {
     std::string token, error;
     if (!acquireToken(state, token, error)) {
@@ -513,27 +559,44 @@ void browse(StateStore& store, State& state) {
 void library(StateStore& store, State& state) {
     title("Biblioteca");
     if (state.library.empty()) printf("Nenhum download indexado.\n");
+    size_t selected = 0;
     for (size_t i = 0; i < state.library.size(); ++i) {
         const auto& item = state.library[i];
-        printf("%zu. %s  [%s]\n", i + 1, item.name.c_str(), item.localState == LocalState::Present ? "arquivo local" : "removido após instalar");
+        printf("%c %zu. %s  [%s%s]\n", i == selected ? '>' : ' ', i + 1, item.name.c_str(), item.localState == LocalState::Present ? "arquivo local" : "removido", item.nspInstallState == NspInstallState::Installed ? ", NSP instalado" : "");
     }
-    hint("A: verificar primeiro item  B: voltar");
+    hint("A: verificar  Y: remover NSP gerenciado  B: voltar");
     while (appletMainLoop()) {
         hidScanInput();
         const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO);
+        if ((pressed & HidNpadButton_Down) && !state.library.empty()) { selected = (selected + 1) % state.library.size(); return library(store, state); }
+        if ((pressed & HidNpadButton_Up) && !state.library.empty()) { selected = (selected + state.library.size() - 1) % state.library.size(); return library(store, state); }
         if ((pressed & HidNpadButton_A) && !state.library.empty()) {
-            auto& item = state.library[0];
+            auto& item = state.library[selected];
             if (item.localState == LocalState::Present && !LocalFile::exists(item.localPath, item.storageKind)) {
                 printf("\nEste arquivo não foi encontrado. Deseja excluir o atalho?  X: excluir\n");
                 while (appletMainLoop()) {
                     hidScanInput();
                     const auto confirmation = hidKeysDown(CONTROLLER_P1_AUTO);
-                    if (confirmation & HidNpadButton_X) { state.library.erase(state.library.begin()); saveOrShow(store, state); return; }
+                    if (confirmation & HidNpadButton_X) { state.library.erase(state.library.begin() + selected); saveOrShow(store, state); return; }
                     if (confirmation & HidNpadButton_B) break;
                     consoleUpdate(nullptr);
                 }
             }
             return;
+        }
+        if ((pressed & HidNpadButton_Y) && !state.library.empty()) {
+            auto& item = state.library[selected];
+            if (item.installed != InstallKind::Nsp || item.nspInstallState != NspInstallState::Installed || item.nspMetaId.empty()) { printf("\nNão há NSP gerenciado para remover.\n"); waitForButton(); return; }
+            title("Remover NSP");
+            printf("%s\n%s %s\n", item.name.c_str(), nspContentKindName(item.nspContentKind), item.nspMetaId.c_str());
+            if (item.nspContentKind == NspContentKind::BaseGame) printf("Atualizações e DLC não serão removidos. Os saves serão preservados.\n");
+            hint("X: confirmar remoção   B: cancelar");
+            while (appletMainLoop()) { hidScanInput(); const auto confirmation = hidKeysDown(CONTROLLER_P1_AUTO); if (confirmation & HidNpadButton_B) return; if (confirmation & HidNpadButton_X) {
+                InstalledNspInfo target{true, item.nspStorage, item.nspVersion, item.nspMetaId, item.nspBaseTitleId, item.nspContentKind}; NspInstallJournal journal; std::string error;
+                if (NspInstaller{}.uninstall(target, store, journal, error)) { item.installed = InstallKind::None; item.nspInstallState = NspInstallState::None; item.installedContentId.clear(); saveOrShow(store, state); }
+                else { printf("\nRemoção falhou: %s\n", error.c_str()); waitForButton(); }
+                return;
+            } consoleUpdate(nullptr); }
         }
         if (pressed & HidNpadButton_B) return;
         consoleUpdate(nullptr);
@@ -553,6 +616,7 @@ int main(int argc, char* argv[]) {
     StateStore store(kRoot);
     State state = store.load();
     if (state.serviceUrl.empty()) state.serviceUrl = configServiceUrl();
+    recoverInstallJournal(store, state);
     recoverTasks(store, state);
 
     int page = 0;
