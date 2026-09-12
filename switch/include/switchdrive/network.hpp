@@ -5,12 +5,24 @@
 #include <vector>
 
 namespace switchdrive {
+enum class DownloadStatus { Completed, AlreadyComplete, Paused, RangeRejected, Failed };
+
+struct DownloadResult {
+    DownloadStatus status{DownloadStatus::Failed};
+    uint64_t bytesWritten{};
+    std::string etag;
+    long httpStatus{};
+};
+
+enum class RangeResponse { AcceptBody, AlreadyComplete, Reject };
+RangeResponse validateRangeResponse(long status, const std::string& contentRange, uint64_t resumeAt, uint64_t expectedSize);
+
 class HttpClient {
   public:
     struct Response { long status{}; std::string body, etag, contentRange; };
     bool get(const std::string& url, const std::vector<std::string>& headers, Response& out, std::string& error) const;
     bool post(const std::string& url, const std::string& body, const std::vector<std::string>& headers, Response& out, std::string& error) const;
-    bool download(const std::string& url, const std::vector<std::string>& headers, const std::string& destination, uint64_t resumeAt, uint64_t expectedSize, std::function<bool(uint64_t)> progress, std::string& error) const;
+    bool download(const std::string& url, const std::vector<std::string>& headers, LocalFile& output, uint64_t resumeAt, uint64_t expectedSize, const std::string& ifRange, std::function<bool(const std::string&)> headersAccepted, std::function<bool(uint64_t)> progress, DownloadResult& result, std::string& error) const;
 };
 
 class AuthClient {
