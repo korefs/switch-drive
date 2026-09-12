@@ -61,7 +61,9 @@ enum class TextId {
     Pfs0InvalidEntries, Pfs0InvalidData, Pfs0InvalidName, Pfs0ReadOutOfBounds,
     RestartCancelHint, ResumeRestartCancelHint, BytesProgress,
     GraphicsUnavailable, AppletModeWarning, OperationCancelled,
-    ButtonA, ButtonX, ButtonY, Folder, FileSize, HomeSubtitle, FilesSubtitle, LibrarySubtitle, SettingsSubtitle, NetworkUnavailable, AutoCleanup, Ellipsis,
+    ButtonA, ButtonX, ButtonY, Folder, FileSize, HomeSubtitle, FilesSubtitle,
+    LibrarySubtitle, SettingsSubtitle, NetworkUnavailable, AutoCleanup, Ellipsis,
+    ControllerReady, ControllerMissing, InputUnfocused, AppVersion,
     Count
 };
 

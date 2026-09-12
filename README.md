@@ -173,9 +173,21 @@ game) for NSP operations. The graphical browser does not require title override.
 
 ### Startup and Sphaira
 
-Version 0.2.2 adds controller focus to the action cards and reads all eight
-controller slots plus handheld input, including both analog sticks. A always
-activates the highlighted card; X/Y still work as direct shortcuts.
+Version 0.2.5 uses two video buffers. With only one, the compositor can retain
+the displayed frame while the app waits for a free buffer to draw the next
+one, stopping input polling as well. The old first frame displayed
+`Connect a controller` before polling input, so that frozen message did not
+establish a HID failure. The renderer now follows the double-buffer setup in
+the [libnx graphics example](https://github.com/switchbrew/switch-examples/blob/master/graphics/simplegfx/source/main.c).
+
+Input uses libnx's standard pad API for all eight controller slots and handheld
+Joy-Cons, with both sticks, D-pad, A/B/X/Y and L/R navigation. A activates the
+highlighted card. The main menu polls input and handles + before presenting a
+frame. SDL joystick polling was removed: the Switch SDL backend uses the same
+libnx pad API and reconfigures HID, so it was not an independent fallback.
+The footer reports the sampled connection and focus state. The boot log records
+input polls and video dequeue/queue stages for frames 1–3, 60 and 300, plus
+connection/focus changes and +, to distinguish a render stall from missing input.
 
 Version 0.2.1 fixes an NRO packaging error: setting `ROMFS` and `ICON` alone
 did not pass them to `elf2nro`. The previous artifact had no `ASET` section,

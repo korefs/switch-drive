@@ -5,7 +5,7 @@ SOURCES := switch/source
 INCLUDES := switch/include
 APP_TITLE := Switch Drive
 APP_AUTHOR := Switch Drive contributors
-APP_VERSION := 0.2.2
+APP_VERSION := 0.2.5
 ICON := icon.jpg
 ROMFS := romfs
 

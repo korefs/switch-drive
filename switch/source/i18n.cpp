@@ -209,7 +209,11 @@ using Catalog = std::array<const char*, textCount()>;
  X("Make Switch Drive yours.", "Deixe o Switch Drive do seu jeito.", "Configura Switch Drive a tu gusto.") \
  X("Network initialization failed (%08x). Reopen the app to try again.", "Falha ao iniciar a rede (%08x). Reabra o app para tentar novamente.", "Error al iniciar la red (%08x). Abre de nuevo la app para reintentar.") \
  X("Clean up packages", "Limpar pacotes", "Limpiar paquetes") \
- X("…", "…", "…")
+ X("…", "…", "…") \
+ X("Controller ready", "Controle conectado", "Control conectado") \
+ X("Connect a controller", "Conecte um controle", "Conecta un control") \
+ X("Waiting for input focus", "Aguardando foco de controle", "Esperando el foco de control") \
+ X("Version 0.2.5", "Versão 0.2.5", "Versión 0.2.5")
 
 #define EN(en, pt, es) en,
 constexpr const char* kEnglishKeys[] = { SD_TEXTS(EN) };

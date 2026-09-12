@@ -140,6 +140,8 @@ struct Ui::Impl {
     MenuFocus focus;
     DirectionRepeat directionRepeat;
     uint64_t cardAction{};
+    bool controllerConnected{};
+    bool inputFocused{true};
     std::vector<Row> rows;
     size_t selectedRow{};
     int rowSelection{-1};
@@ -149,6 +151,7 @@ struct Ui::Impl {
     uint64_t progressTotal{};
     std::unordered_map<std::string, TextSurface> textCache;
     uint64_t frame{};
+    uint64_t inputPolls{};
 
     ~Impl() {
         for (auto& [_, item] : textCache) if (item.surface) SDL_FreeSurface(item.surface);
@@ -216,7 +219,7 @@ Ui::~Ui() { shutdown(); }
 bool Ui::initialize(std::string& error) {
     auto& data = *impl_;
     if (data.ready) return true;
-    appendDiagnostic("0.2.2: main entered", true);
+    appendDiagnostic("0.2.5: main entered", true);
     #ifdef __SWITCH__
     // Launch mode comes from the homebrew ABI, not the launcher name.
     // Sphaira can launch us in either application or library-applet mode.
@@ -256,7 +259,9 @@ bool Ui::initialize(std::string& error) {
     }
     #ifdef __SWITCH__
     appendDiagnostic("ui: framebuffer create");
-    Result framebufferResult = framebufferCreate(&data.framebuffer, nwindowGetDefault(), kWidth, kHeight, PIXEL_FORMAT_RGBA_8888, 1);
+    // The compositor retains the displayed buffer until a replacement is
+    // queued. One buffer can block the second dequeue and stop input polling.
+    Result framebufferResult = framebufferCreate(&data.framebuffer, nwindowGetDefault(), kWidth, kHeight, PIXEL_FORMAT_RGBA_8888, 2);
     if (R_FAILED(framebufferResult)) { error = "framebufferCreate"; shutdown(); return false; }
     data.framebufferReady = true;
     framebufferResult = framebufferMakeLinear(&data.framebuffer);
@@ -270,6 +275,10 @@ bool Ui::initialize(std::string& error) {
     padConfigureInput(8, HidNpadStyleSet_NpadStandard);
     padInitializeAny(&data.pad);
     hidInitializeTouchScreen();
+    // Sample before any startup dialog can display a controller status.
+    padUpdate(&data.pad);
+    data.controllerConnected = padIsConnected(&data.pad);
+    data.inputFocused = appletGetFocusState() == AppletFocusState_InFocus;
     #else
     data.logo = SDL_LoadBMP("romfs/icon.bmp");
     #endif
@@ -358,6 +367,8 @@ void Ui::moveFocus(Direction direction) {
     if (section >= 0) data.tabSelection = section;
 }
 uint64_t Ui::takeCardAction() { const auto result = impl_->cardAction; impl_->cardAction = 0; return result; }
+bool Ui::controllerConnected() const { return impl_->controllerConnected; }
+bool Ui::inputFocused() const { return impl_->inputFocused; }
 void Ui::setRows(std::vector<Row> rows, size_t selected) { impl_->rows = std::move(rows); impl_->selectedRow = selected; }
 void Ui::setSubtitle(const std::string& text) { impl_->subtitle = text; }
 int Ui::takeRowSelection() { const int result = impl_->rowSelection; impl_->rowSelection = -1; return result; }
@@ -391,6 +402,7 @@ void Ui::present() {
         SDL_BlitScaled(data.logo, nullptr, data.screen, &target);
     } else drawIcon(data.screen, Icon::Cloud, 28, 32, kAccent);
     data.drawText(data.brand, 28, 104, 1, kText, 204);
+    data.drawText(i18n::tr(i18n::TextId::AppVersion), 28, 156, 0, kMuted, 204);
     for (size_t index = 0; index < data.tabs.size(); ++index) {
         const int y = 204 + static_cast<int>(index) * 76;
         const bool active = static_cast<int>(index) == data.activeTab;
@@ -478,15 +490,32 @@ void Ui::present() {
         roundedRect(data.screen, 316, 568, static_cast<int>(888 * ratio), 12, 6, kAccent);
     }
     fillRect(data.screen, 276, 622, 952, 1, kRaised);
-    data.drawText(data.hint, 292, 641, 0, kMuted, 924);
+    data.drawText(data.hint, 292, 641, 0, kMuted, 680);
+    const auto inputText = !data.inputFocused ? i18n::TextId::InputUnfocused : data.controllerConnected ? i18n::TextId::ControllerReady : i18n::TextId::ControllerMissing;
+    const auto inputColor = data.inputFocused && data.controllerConnected ? kAccent : kWarning;
+    SDL_Rect inputClip{1000, 630, 228, 50};
+    SDL_SetClipRect(data.screen, &inputClip);
+    data.drawText(i18n::tr(inputText), 1000, 641, 0, inputColor);
+    SDL_SetClipRect(data.screen, nullptr);
     #ifdef __SWITCH__
+    const bool traceFrame = data.frame <= 3 || data.frame == 60 || data.frame == 300;
+    const auto trace = [&](const char* stage) {
+        if (!traceFrame) return;
+        char diagnostic[96]{};
+        std::snprintf(diagnostic, sizeof(diagnostic), "video: frame=%llu %s",
+            static_cast<unsigned long long>(data.frame), stage);
+        appendDiagnostic(diagnostic);
+    };
+    trace("before dequeue");
     u32 stride{};
     auto* output = static_cast<unsigned char*>(framebufferBegin(&data.framebuffer, &stride));
+    trace("buffer acquired");
     if (output) {
         const auto* input = static_cast<const unsigned char*>(data.screen->pixels);
         for (int row = 0; row < kHeight; ++row) std::memcpy(output + static_cast<size_t>(row) * stride, input + static_cast<size_t>(row) * data.screen->pitch, kWidth * 4);
     }
     framebufferEnd(&data.framebuffer);
+    trace("queued");
     #endif
 }
 
@@ -498,12 +527,30 @@ void Ui::scanInput() {
     data.rowSelection = -1;
     data.cardAction = 0;
     padUpdate(&data.pad);
+    const bool wasConnected = data.controllerConnected;
+    const bool wasFocused = data.inputFocused;
+    data.controllerConnected = padIsConnected(&data.pad);
     data.pressed = padGetButtonsDown(&data.pad);
+    data.inputFocused = appletGetFocusState() == AppletFocusState_InFocus;
+    ++data.inputPolls;
+    if (data.inputPolls <= 3 || data.inputPolls == 60 || data.inputPolls == 300 ||
+        wasConnected != data.controllerConnected || wasFocused != data.inputFocused ||
+        (data.pressed & HidNpadButton_Plus)) {
+        char diagnostic[160]{};
+        std::snprintf(diagnostic, sizeof(diagnostic), "input: poll=%llu frame=%llu connected=%d focus=%d down=%llx",
+            static_cast<unsigned long long>(data.inputPolls), static_cast<unsigned long long>(data.frame),
+            data.controllerConnected, data.inputFocused, static_cast<unsigned long long>(data.pressed));
+        appendDiagnostic(diagnostic);
+    }
     // Read both sticks as well as the D-pad; normalize held directions before
     // detecting repeats so either Joy-Con can navigate without frame-rate drift.
     const uint64_t held = padGetButtons(&data.pad);
     constexpr uint64_t directionMask = HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_Left | HidNpadButton_Right;
-    uint64_t directions = held & directionMask;
+    uint64_t directions = 0;
+    if (held & HidNpadButton_AnyUp) directions |= HidNpadButton_Up;
+    if (held & HidNpadButton_AnyDown) directions |= HidNpadButton_Down;
+    if (held & HidNpadButton_AnyLeft) directions |= HidNpadButton_Left;
+    if (held & HidNpadButton_AnyRight) directions |= HidNpadButton_Right;
     for (unsigned index = 0; index < 2; ++index) {
         const auto stick = padGetStickPos(&data.pad, index);
         if (stick.y > 16000) directions |= HidNpadButton_Up;

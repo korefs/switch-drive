@@ -98,7 +98,13 @@ int main() {
     assert(repeat.update(2, 1700) == 0);
     for (const auto language : {Language::EnUs, Language::PtBr, Language::EsEs}) {
         setLanguage(language);
-        for (const auto id : {TextId::ButtonA, TextId::ButtonX, TextId::ButtonY, TextId::Folder, TextId::FileSize, TextId::HomeSubtitle, TextId::FilesSubtitle, TextId::LibrarySubtitle, TextId::SettingsSubtitle, TextId::NetworkUnavailable, TextId::AutoCleanup, TextId::Ellipsis}) assert(std::strlen(tr(id)) > 0);
+        for (const auto id : {TextId::ButtonA, TextId::ButtonX, TextId::ButtonY,
+                TextId::Folder, TextId::FileSize, TextId::HomeSubtitle,
+                TextId::FilesSubtitle, TextId::LibrarySubtitle,
+                TextId::SettingsSubtitle, TextId::NetworkUnavailable,
+                TextId::AutoCleanup, TextId::Ellipsis, TextId::ControllerReady,
+                TextId::ControllerMissing, TextId::InputUnfocused,
+                TextId::AppVersion}) assert(std::strlen(tr(id)) > 0);
     }
     assert(parseLanguage("invalid") == Language::EnUs);
     setLanguage(Language::EnUs);

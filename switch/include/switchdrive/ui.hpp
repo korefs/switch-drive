@@ -46,6 +46,8 @@ class Ui {
     void setCards(std::vector<Card> cards);
     void moveFocus(Direction direction);
     uint64_t takeCardAction();
+    bool controllerConnected() const;
+    bool inputFocused() const;
     void setRows(std::vector<Row> rows, size_t selected);
     void setSubtitle(const std::string& text);
     int takeRowSelection();

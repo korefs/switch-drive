@@ -763,10 +763,10 @@ int main(int argc, char* argv[]) {
             });
         }
         mainHint(tr(TextId::NavigationHint));
-        consoleUpdate(nullptr);
         hidScanInput();
         const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO);
         if (pressed & HidNpadButton_Plus) break;
+        consoleUpdate(nullptr);
         const int touchedTab = ui::instance().takeTabSelection();
         const uint64_t action = ui::instance().takeCardAction();
         if (touchedTab >= 0) { page = touchedTab; continue; }

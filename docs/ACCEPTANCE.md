@@ -61,3 +61,39 @@ embutidos do artefato que será copiado para o cartão.
 - Pendente no console: Joy-Cons encaixados, par desacoplado, controles nos
   slots 2–8, reconexão e Pro Controller. Validar direcional, ambos os sticks,
   A/B/X/Y e L/R, incluindo retorno de um diálogo à tela principal.
+
+## Correção de renderização da versão 0.2.5
+
+O renderizador usava um único buffer. Se o compositor retém o quadro exibido,
+a segunda chamada de `framebufferBegin` espera um buffer livre e impede novas
+leituras dos botões. A primeira tela das versões anteriores mostrava
+`Connect a controller` antes de consultar o HID; portanto, essa mensagem numa
+tela parada não comprovava falha de detecção. Agora são usados dois buffers,
+e o menu principal consulta os botões e processa + antes de apresentar o quadro.
+
+Foi retirada a leitura duplicada via SDL e a configuração especulativa de
+slots genéricos/foco. O backend SDL do Switch também chama o pad do libnx.
+A entrada usa a configuração padrão do libnx para os oito jogadores e portátil.
+
+O teste `switch_drive_ui_runtime_tests` compila o caminho `__SWITCH__` real de
+`ui.cpp` com SDL/TTF do host e serviços de vídeo/entrada simulados. O consumidor
+simulado retém o buffer exibido até receber outro. Com um buffer, o teste falhou
+na segunda apresentação; com dois, passou mais de 300 quadros em cada um de
+quatro cenários (aplicação/applet, com/sem controle inicial). Verifica também
+conexão tardia, reconexão, direcional, stick direito, A, L, estado de foco e +.
+Isso não emula o driver HID, o compositor ou o launcher do console.
+
+```sh
+cmake -S tests -B build/preview -DSWITCHDRIVE_UI_RUNTIME_TESTS=ON
+cmake --build build/preview
+SWITCHDRIVE_PREVIEW_FONT=/caminho/para/fonte.ttf ctest --test-dir build/preview --output-on-failure
+```
+
+Pendente em hardware: substituir o NRO, confirmar `Versão 0.2.5`, abrir por
+Sphaira → Switch Drive, navegar com Joy-Cons já conectados e sair com +.
+Repetir em applet e title override, incluindo desconexão/reconexão.
+Se ainda falhar, preservar `sd:/switch-drive/boot.log`: `video: frame=2 before
+dequeue` sem `buffer acquired` indica espera pelo vídeo; contadores avançando
+com `connected=0` apontam para investigação de entrada. `focus=0` registra
+que o processo estava sem foco. A versão e os três primeiros quadros ficam
+no log; ele é substituído a cada abertura.
