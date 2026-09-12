@@ -1,6 +1,7 @@
 #include "switchdrive/core.hpp"
 #include "switchdrive/i18n.hpp"
 #include "switchdrive/network.hpp"
+#include "switchdrive/ui_model.hpp"
 
 #include <array>
 #include <cassert>
@@ -20,15 +21,97 @@ struct Entry { uint64_t offset, size; uint32_t nameOffset, reserved; };
 #pragma pack(pop)
 
 int main() {
+    const auto placeholderSignature = [](const std::string& value) {
+        std::string output;
+        for (size_t index = 0; index < value.size(); ++index) {
+            if (value[index] != '%' || index + 1 == value.size()) continue;
+            ++index;
+            if (value[index] == '%') continue;
+            output += '%';
+            while (index + 1 < value.size() && (value[index] == 'l' || value[index] == 'z' || value[index] == 'h')) output += value[index++];
+            output += value[index];
+        }
+        return output;
+    };
+    std::vector<std::string> english;
+    setLanguage(Language::EnUs);
+    for (size_t index = 0; index < textCount(); ++index) english.emplace_back(tr(static_cast<TextId>(index)));
     for (const auto language : {Language::EnUs, Language::PtBr, Language::EsEs}) {
         setLanguage(language);
-        for (size_t index = 0; index < textCount(); ++index) assert(std::strlen(tr(static_cast<TextId>(index))) > 0);
+        for (size_t index = 0; index < textCount(); ++index) {
+            assert(std::strlen(tr(static_cast<TextId>(index))) > 0);
+            assert(placeholderSignature(tr(static_cast<TextId>(index))) == placeholderSignature(english[index]));
+        }
+    }
+    assert(ui::hitTest({10, 10, 52, 52}, 61, 61) && !ui::hitTest({10, 10, 52, 52}, 62, 62));
+    assert(ui::moveSelection(0, 4, -1) == 3 && ui::moveSelection(3, 4, 1) == 0);
+    assert(ui::moveSelection(0, 4, -1, false) == 0 && ui::moveSelection(3, 4, 1, false) == 3);
+    assert(ui::viewportStart(0, 20, 13) == 0 && ui::viewportStart(12, 20, 13) == 0 && ui::viewportStart(13, 20, 13) == 1 && ui::viewportStart(19, 20, 13) == 7);
+    // Touch coordinates use the same row geometry as the renderer, including
+    // applet banners, scrolling, row gaps, and out-of-bounds taps.
+    assert(ui::touchedRow(300, 170, 0, 20, false) == 0);
+    assert(ui::touchedRow(300, 170, 10, 20, false) == 5);
+    assert(ui::touchedRow(300, 224, 0, 20, true) == 0);
+    assert(ui::touchedRow(300, 170, 0, 20, true) == -1);
+    assert(ui::touchedRow(300, 230, 0, 20, false) == -1);
+    assert(ui::touchedRow(1240, 170, 0, 20, false) == -1);
+    assert(ui::touchedRow(300, 170, 0, 0, false) == -1);
+    assert(ui::touchedRow(300, 566, 19, 20, true) == -1);
+    // Home/Settings use a two-column grid with an incomplete last row.
+    // A must activate whichever card the Joy-Con selected, including X/Y cards.
+    ui::MenuFocus focus;
+    const std::array<int, 3> cardActions{1, 4, 8};
+    assert(focus.activate(3) == 0);
+    assert(focus.move(ui::Direction::Right, 3, 0, 4) == -1 && focus.card == 1);
+    assert(cardActions[focus.activate(3)] == 4);
+    focus.move(ui::Direction::Down, 3, 0, 4);
+    assert(focus.card == 2 && cardActions[focus.activate(3)] == 8);
+    focus.move(ui::Direction::Right, 3, 0, 4);
+    focus.move(ui::Direction::Down, 3, 0, 4);
+    assert(focus.card == 2); // No phantom fourth card.
+    focus.move(ui::Direction::Up, 3, 0, 4);
+    assert(focus.card == 0);
+    focus.move(ui::Direction::Left, 3, 0, 4);
+    assert(focus.sidebar);
+    assert(focus.move(ui::Direction::Up, 3, 0, 4) == 3);
+    assert(focus.move(ui::Direction::Down, 3, 3, 4) == 0);
+    assert(focus.activate(3) == -1 && !focus.sidebar);
+    assert(focus.activate(3) == 0);
+    focus.move(ui::Direction::Right, 1, 1, 4);
+    focus.move(ui::Direction::Down, 1, 1, 4);
+    assert(focus.card == 0 && focus.activate(1) == 0);
+    focus.move(ui::Direction::Left, 1, 1, 4);
+    focus.move(ui::Direction::Right, 1, 1, 4);
+    assert(!focus.sidebar);
+    assert(focus.activate(0) == -1);
+    focus = {2, false};
+    assert(focus.activate(1) == 0); // A smaller page clamps old focus.
+    ui::DirectionRepeat repeat;
+    assert(repeat.update(1, 1000) == 1);
+    assert(repeat.update(1, 1349) == 0);
+    assert(repeat.update(1, 1350) == 1);
+    assert(repeat.update(1, 1449) == 0);
+    assert(repeat.update(1, 1450) == 1);
+    assert(repeat.update(2, 1460) == 2); // Direction change responds immediately.
+    assert(repeat.update(0, 1470) == 0);
+    assert(repeat.update(2, 1480) == 2); // Releasing resets the initial delay.
+    assert(repeat.update(2, 1700) == 0);
+    for (const auto language : {Language::EnUs, Language::PtBr, Language::EsEs}) {
+        setLanguage(language);
+        for (const auto id : {TextId::ButtonA, TextId::ButtonX, TextId::ButtonY, TextId::Folder, TextId::FileSize, TextId::HomeSubtitle, TextId::FilesSubtitle, TextId::LibrarySubtitle, TextId::SettingsSubtitle, TextId::NetworkUnavailable, TextId::AutoCleanup, TextId::Ellipsis}) assert(std::strlen(tr(id)) > 0);
     }
     assert(parseLanguage("invalid") == Language::EnUs);
     setLanguage(Language::EnUs);
     assert(std::string(tr(TextId::Files)) == "Files");
+    assert(std::string(tr(TextId::Settings)) == "Settings");
+    assert(std::string(tr(TextId::ActiveAccount)) == "Active account: %s");
+    assert(std::string(tr(TextId::CleanupAfterInstall)) == "Cleanup after install: %s");
+    assert(std::string(tr(TextId::NcaMissingDuringInstall)) == "NCA missing during installation");
+    assert(std::string(tr(TextId::AppletModeWarning)).find("Application mode") != std::string::npos);
     setLanguage(Language::PtBr);
     assert(std::string(tr(TextId::Files)) == "Arquivos");
+    assert(std::string(tr(TextId::Settings)) == "Configurações");
+    assert(std::string(tr(TextId::ActiveAccount)) == "Conta ativa: %s");
     assert(std::string(nspContentKindName(NspContentKind::Update)) == "Atualização");
     assert(std::string(nspInstallStorageName(NspInstallStorage::InternalUser)) == "Memória interna");
     setLanguage(Language::EsEs);

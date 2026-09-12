@@ -45,6 +45,11 @@ struct DownloadContext {
     bool rejected{};
 };
 
+int pump(void* user, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+    const auto* activity = static_cast<const ActivityCallback*>(user);
+    return activity && *activity && !(*activity) ? 1 : 0;
+}
+
 size_t writeDownload(void* contents, size_t size, size_t count, void* pointer) {
     auto* context = static_cast<DownloadContext*>(pointer);
     const size_t bytes = size * count;
@@ -133,7 +138,7 @@ std::string encode(CURL* curl, const std::string& value) {
     return output;
 }
 
-bool configure(CURL* curl, const std::vector<std::string>& headers, curl_slist*& list, std::string&) {
+bool configure(CURL* curl, const std::vector<std::string>& headers, curl_slist*& list, std::string&, const ActivityCallback* activity) {
     list = nullptr;
     for (const auto& header : headers) list = curl_slist_append(list, header.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
@@ -142,7 +147,12 @@ bool configure(CURL* curl, const std::vector<std::string>& headers, curl_slist*&
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "SwitchDrive/0.1");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "SwitchDrive/0.2");
+    if (activity && *activity) {
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, pump);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, activity);
+    }
     return true;
 }
 
@@ -181,7 +191,7 @@ bool HttpClient::get(const std::string& url, const std::vector<std::string>& hea
         return false;
     }
     curl_slist* list = nullptr;
-    configure(curl, headers, list, error);
+    configure(curl, headers, list, error, &activity_);
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, append);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out.body);
@@ -192,7 +202,8 @@ bool HttpClient::get(const std::string& url, const std::vector<std::string>& hea
     curl_slist_free_all(list);
     curl_easy_cleanup(curl);
     if (result != CURLE_OK) {
-        error = curl_easy_strerror(result);
+        if (result == CURLE_ABORTED_BY_CALLBACK) error = i18n::tr(i18n::TextId::OperationCancelled);
+        else error = curl_easy_strerror(result);
         return false;
     }
     return out.status >= 200 && out.status < 300;
@@ -207,7 +218,7 @@ bool HttpClient::post(const std::string& url, const std::string& body, const std
     auto all = headers;
     all.emplace_back("Content-Type: application/json");
     curl_slist* list = nullptr;
-    configure(curl, all, list, error);
+    configure(curl, all, list, error, &activity_);
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
@@ -219,7 +230,8 @@ bool HttpClient::post(const std::string& url, const std::string& body, const std
     curl_slist_free_all(list);
     curl_easy_cleanup(curl);
     if (result != CURLE_OK) {
-        error = curl_easy_strerror(result);
+        if (result == CURLE_ABORTED_BY_CALLBACK) error = i18n::tr(i18n::TextId::OperationCancelled);
+        else error = curl_easy_strerror(result);
         return false;
     }
     return out.status >= 200 && out.status < 300;
@@ -235,7 +247,7 @@ bool HttpClient::download(const std::string& url, const std::vector<std::string>
     if (resumeAt) all.emplace_back("Range: bytes=" + std::to_string(resumeAt) + "-");
     if (resumeAt && !ifRange.empty()) all.emplace_back("If-Range: " + ifRange);
     curl_slist* list = nullptr;
-    configure(curl, all, list, error);
+    configure(curl, all, list, error, &activity_);
     DownloadContext context{&output, resumeAt, expectedSize, resumeAt, 0, {}, {}, {}, std::move(headersAccepted), std::move(progress)};
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeDownload);
@@ -261,7 +273,8 @@ bool HttpClient::download(const std::string& url, const std::vector<std::string>
     }
     if (curlResult != CURLE_OK) {
         result.status = DownloadStatus::Failed;
-        error = curl_easy_strerror(curlResult);
+        if (curlResult == CURLE_ABORTED_BY_CALLBACK) error = i18n::tr(i18n::TextId::OperationCancelled);
+        else error = curl_easy_strerror(curlResult);
         return false;
     }
     if (context.alreadyComplete) {

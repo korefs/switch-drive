@@ -286,7 +286,7 @@ bool NspInstaller::install(const fs::path& source, StorageKind kind, const NspPa
             NcmContentId id{}; NcmPlaceHolderId placeholder{}; std::memcpy(id.c, rawId, sizeof(rawId)); std::memcpy(placeholder.uuid.uuid, rawPlaceholder, sizeof(rawPlaceholder));
             if (R_FAILED(ncmContentStorageCreatePlaceHolder(&contentStorage, &id, &placeholder, item.size))) { error = i18n::tr(i18n::TextId::NcaReserveFailed); goto rollback; }
             const Pfs0Entry* packageEntry = pfs0.find(item.id + (item.type == NcmContentType_Meta ? ".cnmt.nca" : ".nca"));
-            if (!packageEntry || packageEntry->size != item.size) { error = i18n::tr(i18n::TextId::NspContentMissing); goto rollback; }
+            if (!packageEntry || packageEntry->size != item.size) { error = i18n::tr(i18n::TextId::NcaMissingDuringInstall); goto rollback; }
             for (uint64_t offset = 0; offset < item.size;) {
                 const size_t amount = static_cast<size_t>(std::min<uint64_t>(buffer.size(), item.size - offset));
                 if (!pfs0.read(*packageEntry, offset, buffer.data(), amount, error) || R_FAILED(ncmContentStorageWritePlaceHolder(&contentStorage, &placeholder, offset, buffer.data(), amount))) { error = i18n::tr(i18n::TextId::NcaWriteFailed); goto rollback; }

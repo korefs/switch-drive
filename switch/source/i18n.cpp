@@ -73,6 +73,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("removed after install", "removido após instalar", "eliminado tras instalar") \
  X("managed NSP installed", "NSP gerenciado instalado", "NSP administrado instalado") \
  X("A: check  Y: remove managed NSP  B: back", "A: verificar  Y: remover NSP gerenciado  B: voltar", "A: comprobar  Y: eliminar NSP administrado  B: volver") \
+ X("File missing", "Arquivo ausente", "Archivo ausente") \
  X("This file was not found. Remove the shortcut?  X: remove", "Este arquivo não foi encontrado. Deseja excluir o atalho?  X: excluir", "No se encontró este archivo. ¿Eliminar el acceso directo?  X: eliminar") \
  X("Remove shortcut", "Excluir atalho", "Eliminar acceso directo") \
  X("Remove NSP", "Remover NSP", "Eliminar NSP") \
@@ -91,7 +92,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("A: toggle cleanup     X: add account", "A: alternar limpeza     X: adicionar conta", "A: cambiar limpieza     X: añadir cuenta") \
  X("X: add account", "X: adicionar conta", "X: añadir cuenta") \
  X("Y: change language", "Y: trocar idioma", "Y: cambiar idioma") \
- X("L/R: change section   +: exit", "L/R: trocar tela   +: sair", "L/R: cambiar sección   +: salir") \
+ X("Stick / D-pad: move   A: select   B: menu   L/R: section   +: exit", "Analógico / direcional: mover   A: selecionar   B: menu   L/R: seção   +: sair", "Stick / cruceta: mover   A: elegir   B: menú   L/R: sección   +: salir") \
  X("Exit", "Sair", "Salir") \
  X("Language", "Idioma", "Idioma") \
  X("Invalid NRO: NRO0 header missing", "NRO inválido: cabeçalho NRO0 ausente", "NRO inválido: falta la cabecera NRO0") \
@@ -193,7 +194,22 @@ using Catalog = std::array<const char*, textCount()>;
  X("NSP read out of bounds", "leitura NSP fora dos limites", "lectura NSP fuera de límites") \
  X("X: restart   B: cancel", "X: reiniciar   B: cancelar", "X: reiniciar   B: cancelar") \
  X("A: resume   X: restart   B: cancel", "A: retomar   X: reiniciar   B: cancelar", "A: reanudar   X: reiniciar   B: cancelar") \
- X("%llu / %llu bytes", "%llu / %llu bytes", "%llu / %llu bytes")
+ X("%llu / %llu bytes", "%llu / %llu bytes", "%llu / %llu bytes") \
+ X("Graphics unavailable: %s", "Gráficos indisponíveis: %s", "Gráficos no disponibles: %s") \
+ X("Application mode (R + game) recommended for NSP.", "Para NSP, use o modo aplicação (R + jogo).", "Para NSP, usa el modo aplicación (R + juego).") \
+ X("Operation cancelled", "Operação cancelada", "Operación cancelada") \
+ X("A", "A", "A") \
+ X("X", "X", "X") \
+ X("Y", "Y", "Y") \
+ X("Folder", "Pasta", "Carpeta") \
+ X("%.1f MiB", "%.1f MiB", "%.1f MiB") \
+ X("Your Drive, ready for your Switch.", "Seu Drive, pronto para o seu Switch.", "Tu Drive, listo para tu Switch.") \
+ X("Explore your folders and download to microSD.", "Explore suas pastas e baixe para o microSD.", "Explora tus carpetas y descarga a la microSD.") \
+ X("Your downloads, all in one place.", "Seus downloads, todos em um só lugar.", "Tus descargas, todas en un solo lugar.") \
+ X("Make Switch Drive yours.", "Deixe o Switch Drive do seu jeito.", "Configura Switch Drive a tu gusto.") \
+ X("Network initialization failed (%08x). Reopen the app to try again.", "Falha ao iniciar a rede (%08x). Reabra o app para tentar novamente.", "Error al iniciar la red (%08x). Abre de nuevo la app para reintentar.") \
+ X("Clean up packages", "Limpar pacotes", "Limpiar paquetes") \
+ X("…", "…", "…")
 
 #define EN(en, pt, es) en,
 constexpr const char* kEnglishKeys[] = { SD_TEXTS(EN) };

@@ -40,7 +40,7 @@ enum class TextId {
     NspQuerySwitchOnly, NcmUnavailable, NsUnavailable, InstalledQueryFailed,
     NspInstallSwitchOnly, DowngradeBlocked, MetadataNcaMissing,
     InstallDestinationOpenFailed, DestinationNoSpace, InvalidNcaId,
-    NcaQueryFailed, PlaceholderCreateFailed, NcaReserveFailed,
+    NcaQueryFailed, PlaceholderCreateFailed, NcaReserveFailed, NcaMissingDuringInstall,
     NcaWriteFailed, InstallCancelled, NcaRegisterFailed, MetadataCommitFailed,
     JournalUpdateAfterInstallFailed, RecoverySwitchOnly, RecoveryNcmUnavailable,
     RecoveryCommitCheckFailed, UninstallSwitchOnly, ManagedContentMissing,
@@ -60,6 +60,8 @@ enum class TextId {
     JournalCommitFailed, JournalClearCommitFailed, Pfs0InvalidHeader,
     Pfs0InvalidEntries, Pfs0InvalidData, Pfs0InvalidName, Pfs0ReadOutOfBounds,
     RestartCancelHint, ResumeRestartCancelHint, BytesProgress,
+    GraphicsUnavailable, AppletModeWarning, OperationCancelled,
+    ButtonA, ButtonX, ButtonY, Folder, FileSize, HomeSubtitle, FilesSubtitle, LibrarySubtitle, SettingsSubtitle, NetworkUnavailable, AutoCleanup, Ellipsis,
     Count
 };
 

@@ -5,14 +5,16 @@ SOURCES := switch/source
 INCLUDES := switch/include
 APP_TITLE := Switch Drive
 APP_AUTHOR := Switch Drive contributors
-APP_VERSION := 0.1.0
+APP_VERSION := 0.2.2
 ICON := icon.jpg
+ROMFS := romfs
 
 ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
-CFLAGS := -g -Wall -Wextra -O2 -ffunction-sections $(ARCH)
+PKG_CONFIG := $(DEVKITPRO)/portlibs/switch/bin/aarch64-none-elf-pkg-config
+CFLAGS := `$(PKG_CONFIG) --cflags sdl2 SDL2_ttf` -g -Wall -Wextra -O2 -ffunction-sections $(ARCH)
 CXXFLAGS := $(CFLAGS) -std=gnu++20 -fno-rtti -fno-exceptions
 LDFLAGS := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
-LIBS := -lcurl -ljansson -lmbedcrypto -lz -lnx
+LIBS := -lcurl -ljansson -lmbedcrypto -lz `$(PKG_CONFIG) --libs sdl2 SDL2_ttf` -lnx
 LIBDIRS := $(PORTLIBS) $(LIBNX)
 
 include $(DEVKITPRO)/libnx/switch_rules
@@ -20,6 +22,9 @@ LIBDIRS := $(PORTLIBS) $(LIBNX)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 export OUTPUT := $(CURDIR)/$(TARGET)
+export APP_ICON := $(CURDIR)/$(ICON)
+export APP_ROMFS := $(CURDIR)/$(ROMFS)
+export NROFLAGS := --icon=$(APP_ICON) --nacp=$(OUTPUT).nacp --romfsdir=$(APP_ROMFS)
 export TOPDIR := $(CURDIR)
 export VPATH := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir))
 export DEPSDIR := $(CURDIR)/$(BUILD)
@@ -42,7 +47,7 @@ DEPENDS := $(OFILES:.o=.d)
 CXXFLAGS += $(INCLUDE) -D__SWITCH__
 .PHONY: all
 all: $(OUTPUT).nro
-$(OUTPUT).nro: $(OUTPUT).elf $(OUTPUT).nacp
+$(OUTPUT).nro: $(OUTPUT).elf $(OUTPUT).nacp $(APP_ICON) $(wildcard $(APP_ROMFS)/*)
 $(OUTPUT).elf: $(OFILES)
 -include $(DEPENDS)
 endif

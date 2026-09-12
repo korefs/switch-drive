@@ -1,6 +1,7 @@
 #include "switchdrive/core.hpp"
 #include "switchdrive/i18n.hpp"
 #include "switchdrive/network.hpp"
+#include "switchdrive/ui.hpp"
 
 #include <switch.h>
 #include <mbedtls/md5.h>
@@ -17,23 +18,54 @@ using namespace switchdrive::i18n;
 
 namespace {
 
-PadState gPad;
-#define hidScanInput() padUpdate(&gPad)
-#define hidKeysDown(_unused) padGetButtonsDown(&gPad)
+#define hidScanInput() ui::scanInput()
+#define hidKeysDown(_unused) ui::keysDown()
 #define CONTROLLER_P1_AUTO 0
+#define printf(...) ui::writef(__VA_ARGS__)
+#define consoleClear() ui::clear()
+#define consoleUpdate(_unused) ui::present()
+
+bool networkReady{};
+uint32_t networkResult{};
 
 constexpr const char* kRoot = "sdmc:/switch-drive";
 constexpr const char* kDefaultService = "";
 constexpr uint64_t kCheckpointBytes = 64ULL * 1024ULL * 1024ULL;
 constexpr auto kCheckpointInterval = std::chrono::seconds(10);
-
 void title(const char* page) {
     consoleClear();
-    printf("\x1b[36;1m%s\x1b[0m  |  %s\n", tr(TextId::AppName), page);
-    printf("────────────────────────────────────────────────────────\n");
+    ui::instance().setHeader(page);
 }
 
-void hint(const char* text) { printf("\n\x1b[90m%s\x1b[0m\n", text); }
+std::string networkError() {
+    char message[256]{};
+    std::snprintf(message, sizeof(message), tr(TextId::NetworkUnavailable), networkResult);
+    return message;
+}
+
+std::string accountName(const State& state) {
+    for (const auto& account : state.accounts) if (account.id == state.lastAccountId) return account.email;
+    return tr(TextId::NoAccountConnected);
+}
+
+std::string fileSize(uint64_t bytes) {
+    char text[64]{};
+    std::snprintf(text, sizeof(text), tr(TextId::FileSize), static_cast<double>(bytes) / (1024.0 * 1024.0));
+    return text;
+}
+
+void hint(const char* text) { ui::instance().setHint(text); }
+
+void mainTitle(int page) {
+    static constexpr std::array<TextId, 4> pages{TextId::Home, TextId::Files, TextId::Library, TextId::Settings};
+    consoleClear();
+    std::vector<std::string> tabs;
+    tabs.reserve(pages.size());
+    for (const auto item : pages) tabs.emplace_back(tr(item));
+    ui::instance().setHeader(tr(pages[static_cast<size_t>(page)]), tabs, page);
+}
+
+void mainHint(const char* text) { hint(text); }
 
 void waitForButton() {
     printf("\n%s", tr(TextId::Continue));
@@ -44,17 +76,31 @@ void waitForButton() {
     }
 }
 
+bool pumpUi() {
+    consoleUpdate(nullptr);
+    hidScanInput();
+    return appletMainLoop() && !(hidKeysDown(CONTROLLER_P1_AUTO) & HidNpadButton_B);
+}
+
+HttpClient activeHttp() { return HttpClient{pumpUi}; }
+
 bool chooseNspDestination(const NspPackageInfo& package, const std::vector<InstalledNspInfo>& installed, NspInstallStorage& destination) {
     destination = NspInstallStorage::SdCard;
     while (appletMainLoop()) {
         title(tr(TextId::InstallNsp));
-        printf("%s\n", nspContentKindName(package.kind));
-        printf(tr(TextId::TitleId), package.baseTitleId.c_str()); printf("\n");
-        printf(tr(TextId::Version), package.version); printf("\n");
-        if (!installed.empty()) { printf(tr(TextId::InstalledVersion), installed.front().version, nspInstallStorageName(installed.front().storage)); printf("\n"); }
-        printf("\n%s %s\n%s %s\n", destination == NspInstallStorage::SdCard ? ">" : " ", tr(TextId::SdCard), destination == NspInstallStorage::InternalUser ? ">" : " ", tr(TextId::InternalStorage));
+        char version[128]{};
+        std::snprintf(version, sizeof(version), tr(TextId::Version), package.version);
+        std::string summary = std::string(nspContentKindName(package.kind)) + " · " + package.baseTitleId + " · " + version;
+        if (!installed.empty()) {
+            std::snprintf(version, sizeof(version), tr(TextId::InstalledVersion), installed.front().version, nspInstallStorageName(installed.front().storage));
+            summary += std::string(" · ") + version;
+        }
+        ui::instance().setSubtitle(summary);
+        ui::instance().setRows({{tr(TextId::SdCard), package.baseTitleId, ui::Icon::File}, {tr(TextId::InternalStorage), package.baseTitleId, ui::Icon::File}}, destination == NspInstallStorage::SdCard ? 0 : 1);
         hint(tr(TextId::DestinationHint));
         hidScanInput(); const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO);
+        const int touched = ui::instance().takeRowSelection();
+        if (touched >= 0) destination = touched == 0 ? NspInstallStorage::SdCard : NspInstallStorage::InternalUser;
         if (pressed & (HidNpadButton_Up | HidNpadButton_Down)) destination = destination == NspInstallStorage::SdCard ? NspInstallStorage::InternalUser : NspInstallStorage::SdCard;
         if (pressed & HidNpadButton_A) return true;
         if (pressed & HidNpadButton_B) return false;
@@ -107,13 +153,14 @@ bool md5File(const fs::path& path, StorageKind kind, std::string& digest, std::s
 
 bool connectAccount(StateStore& store, State& state) {
     title(tr(TextId::ConnectDrive));
+    if (!networkReady) { printf("%s\n", networkError().c_str()); waitForButton(); return false; }
     if (state.serviceUrl.empty()) {
         printf("%s\n", tr(TextId::ConfigMissing));
         waitForButton();
         return false;
     }
     if (state.consolePublicKey.empty()) state.consolePublicKey = makeId() + makeId();
-    AuthClient auth(HttpClient{}, state.serviceUrl);
+    AuthClient auth(activeHttp(), state.serviceUrl);
     std::string id, url, code, pollSecret, error;
     if (!auth.begin(state.consolePublicKey, id, url, code, pollSecret, error)) {
         printf(tr(TextId::StartFailed), error.c_str()); printf("\n");
@@ -145,11 +192,12 @@ bool connectAccount(StateStore& store, State& state) {
 }
 
 bool acquireToken(const State& state, std::string& token, std::string& error) {
+    if (!networkReady) { error = networkError(); return false; }
     if (state.lastAccountId.empty()) {
         error = tr(TextId::ConnectAccountFirst);
         return false;
     }
-    return AuthClient(HttpClient{}, state.serviceUrl).accessToken(state.sessionToken, state.lastAccountId, token, error);
+    return AuthClient(activeHttp(), state.serviceUrl).accessToken(state.sessionToken, state.lastAccountId, token, error);
 }
 
 bool sameRemote(const Task& task, const RemoteFile& remote, const std::string& accountId) {
@@ -308,7 +356,7 @@ void installIfRequested(StateStore& store, State& state, Task& task) {
                 if (!chooseNspDestination(package, existing, destination)) return;
                 NspInstallJournal journal; journal.libraryId = library->id; journal.localPath = task.localPath; journal.deletePackage = task.deleteAfterInstall;
                 library->nspInstallState = NspInstallState::Installing; saveOrShow(store, state);
-                installed = installer.install(task.localPath, task.storageKind, package, destination, store, journal, [](uint64_t current, uint64_t total) { printf("\r"); printf(tr(TextId::InstallingBytes), static_cast<unsigned long long>(current), static_cast<unsigned long long>(total)); consoleUpdate(nullptr); return appletMainLoop(); }, error);
+                installed = installer.install(task.localPath, task.storageKind, package, destination, store, journal, [](uint64_t current, uint64_t total) { ui::instance().setProgress(current, total); printf("\r"); printf(tr(TextId::InstallingBytes), static_cast<unsigned long long>(current), static_cast<unsigned long long>(total)); consoleUpdate(nullptr); return appletMainLoop(); }, error);
                 if (installed) {
                     library->installed = InstallKind::Nsp; library->installedContentId = package.metaId; library->nspContentKind = package.kind; library->nspStorage = destination; library->nspMetaId = package.metaId; library->nspBaseTitleId = package.baseTitleId; library->nspVersion = package.version; library->nspInstallState = NspInstallState::Installed;
                 } else library->nspInstallState = NspInstallState::Failed;
@@ -418,12 +466,13 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
     task->state = TaskState::Downloading;
     saveOrShow(store, state);
     title(tr(task->committedBytes ? TextId::ResumingDownload : TextId::Transfers));
+    ui::instance().setProgress(task->committedBytes, task->expectedSize);
     printf(tr(TextId::Downloading), task->displayName.c_str()); printf("\n");
     auto lastCheckpoint = task->committedBytes;
     auto lastCheckpointAt = std::chrono::steady_clock::now();
     DownloadResult result;
-    const bool downloaded = task->committedBytes == task->expectedSize || HttpClient{}.download(
-        DriveClient(HttpClient{}).mediaUrl(remote),
+    const bool downloaded = task->committedBytes == task->expectedSize || activeHttp().download(
+        DriveClient(activeHttp()).mediaUrl(remote),
         {"Authorization: Bearer " + token},
         output,
         task->committedBytes,
@@ -434,6 +483,7 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
             return store.save(state, error);
         },
         [&](uint64_t received) {
+            ui::instance().setProgress(received, task->expectedSize);
             printf("\r"); printf(tr(TextId::BytesProgress), static_cast<unsigned long long>(received), static_cast<unsigned long long>(task->expectedSize)); printf("   ");
             const auto now = std::chrono::steady_clock::now();
             if (received - lastCheckpoint >= kCheckpointBytes && now - lastCheckpointAt >= kCheckpointInterval) {
@@ -442,7 +492,8 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
                 lastCheckpointAt = now;
             }
             consoleUpdate(nullptr);
-            return appletMainLoop();
+            hidScanInput();
+            return appletMainLoop() && !(hidKeysDown(CONTROLLER_P1_AUTO) & HidNpadButton_B);
         },
         result,
         error);
@@ -517,39 +568,61 @@ void browse(StateStore& store, State& state) {
         waitForButton();
         return;
     }
-    DriveClient drive(HttpClient{});
+    DriveClient drive(activeHttp());
     std::string folder = state.lastFolderId.empty() ? "root" : state.lastFolderId;
     std::vector<std::string> parents;
     bool shared = false;
     size_t selected = 0;
+    std::vector<RemoteFile> files;
+    std::string next;
+    bool reload = true;
     while (appletMainLoop()) {
-        std::vector<RemoteFile> files;
-        std::string next;
-        if (!drive.list(token, folder, shared, "", files, next, error)) {
-            title(tr(TextId::Files));
-            printf(tr(TextId::DriveError), error.c_str()); printf("\n");
-            waitForButton();
-            return;
+        if (reload) {
+            files.clear();
+            next.clear();
+            if (!drive.list(token, folder, shared, "", files, next, error)) {
+                title(tr(TextId::Files));
+                printf(tr(TextId::DriveError), error.c_str()); printf("\n");
+                waitForButton();
+                return;
+            }
+            selected = 0;
+            reload = false;
         }
         title(tr(shared ? TextId::SharedWithMe : TextId::MyDrive));
-        printf(tr(TextId::AccountLabel), state.lastAccountId.c_str()); printf("\n\n");
+        ui::instance().setSubtitle(accountName(state));
         if (files.empty()) printf("%s\n", tr(TextId::EmptyFolder));
-        for (size_t i = 0; i < files.size() && i < 20; ++i) {
-            const auto& file = files[i];
-            printf("%s %c %-42s %10llu\n", i == selected ? ">" : " ", file.folder ? 'D' : 'F', file.name.c_str(), static_cast<unsigned long long>(file.size));
-        }
+        std::vector<ui::Row> rows;
+        for (const auto& file : files) rows.push_back({file.name, file.folder ? tr(TextId::Folder) : fileSize(file.size), file.folder ? ui::Icon::Folder : ui::Icon::File});
+        ui::instance().setRows(std::move(rows), selected);
         hint(tr(TextId::BrowseHint));
         bool refresh = false;
         while (appletMainLoop() && !refresh) {
             hidScanInput();
             const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO);
-            if (pressed & HidNpadButton_Down) { if (!files.empty()) selected = (selected + 1) % files.size(); refresh = true; }
+            const int touched = ui::instance().takeRowSelection();
+            if (touched >= 0 && static_cast<size_t>(touched) < files.size()) { selected = static_cast<size_t>(touched); refresh = true; }
+
+            if (pressed & HidNpadButton_Down) {
+                if (!files.empty()) {
+                    if (selected + 1 < files.size()) { ++selected; refresh = true; }
+                    else if (!next.empty()) {
+                        std::vector<RemoteFile> page;
+                        std::string following;
+                        if (!drive.list(token, folder, shared, next, page, following, error)) { title(tr(TextId::Files)); printf(tr(TextId::DriveError), error.c_str()); printf("\n"); waitForButton(); return; }
+                        files.insert(files.end(), page.begin(), page.end());
+                        next = following;
+                        if (selected + 1 < files.size()) ++selected;
+                        refresh = true;
+                    }
+                }
+            }
             if (pressed & HidNpadButton_Up) { if (!files.empty()) selected = (selected + files.size() - 1) % files.size(); refresh = true; }
-            if (pressed & HidNpadButton_L) { shared = !shared; folder = "root"; parents.clear(); selected = 0; refresh = true; }
-            if (pressed & HidNpadButton_B) { if (parents.empty()) return; folder = parents.back(); parents.pop_back(); shared = false; selected = 0; refresh = true; }
-            if (files.empty()) continue;
+            if (pressed & HidNpadButton_L) { shared = !shared; folder = "root"; parents.clear(); reload = true; refresh = true; }
+            if (pressed & HidNpadButton_B) { if (parents.empty()) return; folder = parents.back(); parents.pop_back(); shared = false; reload = true; refresh = true; }
+            if (files.empty()) { consoleUpdate(nullptr); continue; }
             auto& file = files[selected];
-            if (pressed & HidNpadButton_A && file.folder) { parents.push_back(folder); folder = file.id; shared = false; selected = 0; refresh = true; }
+            if (pressed & HidNpadButton_A && file.folder) { parents.push_back(folder); folder = file.id; shared = false; reload = true; refresh = true; }
             if ((pressed & HidNpadButton_X) && file.canDownload && !file.folder) { downloadFile(store, state, file, false); refresh = true; }
             if ((pressed & HidNpadButton_Y) && file.canDownload && !file.folder) { downloadFile(store, state, file, true); refresh = true; }
             consoleUpdate(nullptr);
@@ -560,19 +633,27 @@ void browse(StateStore& store, State& state) {
 }
 
 void library(StateStore& store, State& state) {
-    title(tr(TextId::Library));
-    if (state.library.empty()) printf("%s\n", tr(TextId::NoIndexedDownloads));
     size_t selected = 0;
-    for (size_t i = 0; i < state.library.size(); ++i) {
-        const auto& item = state.library[i];
-        printf("%c %zu. %s  [%s%s]\n", i == selected ? '>' : ' ', i + 1, item.name.c_str(), item.localState == LocalState::Present ? tr(TextId::LocalFile) : tr(TextId::RemovedAfterInstall), item.nspInstallState == NspInstallState::Installed ? tr(TextId::NspInstalledSuffix) : "");
-    }
-    hint(tr(TextId::LibraryHint));
+    bool redraw = true;
     while (appletMainLoop()) {
+        if (redraw) {
+            title(tr(TextId::Library));
+            if (state.library.empty()) printf("%s\n", tr(TextId::NoIndexedDownloads));
+            ui::instance().setSubtitle(tr(TextId::LibrarySubtitle));
+            std::vector<ui::Row> rows;
+            for (const auto& item : state.library) rows.push_back({item.name, item.nspInstallState == NspInstallState::Installed ? tr(TextId::ManagedNspInstalled) : item.localState == LocalState::Present ? fileSize(item.size) : tr(TextId::RemovedAfterInstall), ui::Icon::File});
+            ui::instance().setRows(std::move(rows), selected);
+            hint(tr(TextId::LibraryHint));
+            consoleUpdate(nullptr);
+            redraw = false;
+        }
         hidScanInput();
         const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO);
-        if ((pressed & HidNpadButton_Down) && !state.library.empty()) { selected = (selected + 1) % state.library.size(); return library(store, state); }
-        if ((pressed & HidNpadButton_Up) && !state.library.empty()) { selected = (selected + state.library.size() - 1) % state.library.size(); return library(store, state); }
+        const int touched = ui::instance().takeRowSelection();
+        if (touched >= 0 && static_cast<size_t>(touched) < state.library.size()) { selected = static_cast<size_t>(touched); redraw = true; }
+
+        if ((pressed & HidNpadButton_Down) && !state.library.empty()) { selected = (selected + 1) % state.library.size(); redraw = true; }
+        if ((pressed & HidNpadButton_Up) && !state.library.empty()) { selected = (selected + state.library.size() - 1) % state.library.size(); redraw = true; }
         if ((pressed & HidNpadButton_A) && !state.library.empty()) {
             auto& item = state.library[selected];
             if (item.localState == LocalState::Present && !LocalFile::exists(item.localPath, item.storageKind)) {
@@ -611,51 +692,98 @@ void library(StateStore& store, State& state) {
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
-    consoleInit(nullptr);
-    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
-    padInitializeDefault(&gPad);
-    socketInitializeDefault();
-    curl_global_init(CURL_GLOBAL_DEFAULT);
+    std::string graphicsError;
+    if (!ui::instance().initialize(graphicsError)) {
+        ui::instance().diagnostic(graphicsError.c_str());
+        ui::instance().enableConsoleFallback(graphicsError);
+    }
+    ui::instance().diagnostic("main: ui initialized or fallback active");
+    SocketInitConfig socketConfig = *socketGetDefaultInitConfig();
+    if (ui::instance().appletMode()) {
+        socketConfig.tcp_tx_buf_size = 0x8000;
+        socketConfig.tcp_rx_buf_size = 0x10000;
+        socketConfig.tcp_tx_buf_max_size = 0;
+        socketConfig.tcp_rx_buf_max_size = 0;
+        socketConfig.sb_efficiency = 2;
+    }
+    const Result socketResult = socketInitialize(&socketConfig);
+    const CURLcode curlResult = curl_global_init(CURL_GLOBAL_DEFAULT);
+    networkReady = R_SUCCEEDED(socketResult) && curlResult == CURLE_OK;
+    networkResult = R_FAILED(socketResult) ? socketResult : static_cast<uint32_t>(curlResult);
+    char networkDiagnostic[128]{};
+    std::snprintf(networkDiagnostic, sizeof(networkDiagnostic), "main: socket=%08x curl=%d", socketResult, static_cast<int>(curlResult));
+    ui::instance().diagnostic(networkDiagnostic);
     StateStore store(kRoot);
     State state = store.load();
+    ui::instance().diagnostic("main: state loaded");
     setLanguage(parseLanguage(state.language));
+    ui::instance().setBrand(tr(TextId::AppName));
+    if (ui::instance().appletMode()) ui::instance().setAppletWarning(tr(TextId::AppletModeWarning));
+    if (!ui::instance().graphical()) {
+        title(tr(TextId::AppName));
+        printf(tr(TextId::GraphicsUnavailable), graphicsError.c_str()); printf("\n");
+        waitForButton();
+        curl_global_cleanup();
+        if (R_SUCCEEDED(socketResult)) socketExit();
+        ui::instance().shutdown();
+        return 1;
+    }
     if (state.serviceUrl.empty()) state.serviceUrl = configServiceUrl();
+    ui::instance().diagnostic("main: configuration loaded");
     recoverInstallJournal(store, state);
+    ui::instance().diagnostic("main: install journal recovered");
     recoverTasks(store, state);
+    ui::instance().diagnostic("main: downloads recovered");
 
     int page = 0;
+    ui::instance().diagnostic("main: entering application loop");
     while (appletMainLoop()) {
-        title(tr(page == 0 ? TextId::Home : page == 1 ? TextId::Files : page == 2 ? TextId::Library : TextId::Settings));
+        ui::instance().setBrand(tr(TextId::AppName));
+        if (ui::instance().appletMode()) ui::instance().setAppletWarning(tr(TextId::AppletModeWarning));
+        mainTitle(page);
+        static constexpr std::array<TextId, 4> subtitles{TextId::HomeSubtitle, TextId::FilesSubtitle, TextId::LibrarySubtitle, TextId::SettingsSubtitle};
+        ui::instance().setSubtitle(tr(subtitles[static_cast<size_t>(page)]));
         if (page == 0) {
-            if (state.accounts.empty()) printf("%s\n", tr(TextId::NoAccountConnected));
-            else { printf(tr(TextId::ActiveAccount), state.lastAccountId.c_str()); printf("\n"); }
-            printf("\n%s\n", tr(TextId::OpenFiles));
+            ui::instance().setCards({
+                {tr(TextId::ConnectDrive), accountName(state), HidNpadButton_A, ui::Icon::Cloud},
+                {tr(TextId::Files), tr(TextId::MyDrive), HidNpadButton_X, ui::Icon::Folder},
+                {tr(TextId::Library), tr(TextId::LibrarySubtitle), HidNpadButton_Y, ui::Icon::Library},
+            });
         } else if (page == 1) {
-            printf("%s\n", tr(TextId::BrowseDrive));
+            ui::instance().setCards({{tr(TextId::MyDrive), accountName(state), HidNpadButton_A, ui::Icon::Folder}});
         } else if (page == 2) {
-            printf(tr(TextId::OpenLibrary), state.library.size()); printf("\n");
+            char detail[96]{};
+            std::snprintf(detail, sizeof(detail), tr(TextId::OpenLibrary), state.library.size());
+            ui::instance().setCards({{tr(TextId::Library), detail, HidNpadButton_A, ui::Icon::Library}});
         } else {
-            printf(tr(TextId::CleanupAfterInstall), state.deleteAfterInstall ? tr(TextId::Yes) : tr(TextId::No)); printf("\n");
-            printf("%s: %s\n", tr(TextId::Language), languageName(currentLanguage()).data());
-            printf("%s\n%s\n", tr(TextId::ToggleCleanup), tr(TextId::ChangeLanguage));
+            ui::instance().setCards({
+                {tr(TextId::AutoCleanup), state.deleteAfterInstall ? tr(TextId::Yes) : tr(TextId::No), HidNpadButton_A, ui::Icon::Settings},
+                {tr(TextId::ConnectDrive), accountName(state), HidNpadButton_X, ui::Icon::Cloud},
+                {tr(TextId::Language), std::string(languageName(currentLanguage())), HidNpadButton_Y, ui::Icon::Language},
+            });
         }
-        hint(tr(TextId::NavigationHint));
+        mainHint(tr(TextId::NavigationHint));
+        consoleUpdate(nullptr);
         hidScanInput();
         const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO);
         if (pressed & HidNpadButton_Plus) break;
-        if (pressed & HidNpadButton_R) page = (page + 1) % 4;
-        if (pressed & HidNpadButton_L) page = (page + 3) % 4;
-        if (page == 0 && (pressed & HidNpadButton_A)) connectAccount(store, state);
-        if (page == 0 && (pressed & HidNpadButton_X)) browse(store, state);
-        if (page == 1 && (pressed & HidNpadButton_A)) browse(store, state);
-        if (page == 2 && (pressed & HidNpadButton_A)) library(store, state);
-        if (page == 3 && (pressed & HidNpadButton_A)) { state.deleteAfterInstall = !state.deleteAfterInstall; saveOrShow(store, state); }
-        if (page == 3 && (pressed & HidNpadButton_X)) connectAccount(store, state);
-        if (page == 3 && (pressed & HidNpadButton_Y)) { setLanguage(nextLanguage(currentLanguage())); state.language = languageCode(currentLanguage()); saveOrShow(store, state); }
-        consoleUpdate(nullptr);
+        const int touchedTab = ui::instance().takeTabSelection();
+        const uint64_t action = ui::instance().takeCardAction();
+        if (touchedTab >= 0) { page = touchedTab; continue; }
+        // The UI resolves A to the selected card; X/Y remain direct shortcuts.
+        // Dispatch exactly one action, then rebuild the main screen after any
+        // nested dialog so stale dialog state cannot receive the next input.
+        if (page == 0 && action == HidNpadButton_A) connectAccount(store, state);
+        else if (page == 0 && action == HidNpadButton_Y) library(store, state);
+        else if (page == 0 && action == HidNpadButton_X) browse(store, state);
+        else if (page == 1 && action == HidNpadButton_A) browse(store, state);
+        else if (page == 2 && action == HidNpadButton_A) library(store, state);
+        else if (page == 3 && action == HidNpadButton_A) { state.deleteAfterInstall = !state.deleteAfterInstall; saveOrShow(store, state); }
+        else if (page == 3 && action == HidNpadButton_X) connectAccount(store, state);
+        else if (page == 3 && action == HidNpadButton_Y) { setLanguage(nextLanguage(currentLanguage())); state.language = languageCode(currentLanguage()); saveOrShow(store, state); }
     }
     curl_global_cleanup();
-    socketExit();
-    consoleExit(nullptr);
+    if (R_SUCCEEDED(socketResult)) socketExit();
+    ui::instance().shutdown();
     return 0;
 }

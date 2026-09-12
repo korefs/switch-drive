@@ -5,6 +5,7 @@
 #include <vector>
 
 namespace switchdrive {
+using ActivityCallback = std::function<bool()>;
 enum class DownloadStatus { Completed, AlreadyComplete, Paused, RangeRejected, Failed };
 
 struct DownloadResult {
@@ -20,9 +21,12 @@ RangeResponse validateRangeResponse(long status, const std::string& contentRange
 class HttpClient {
   public:
     struct Response { long status{}; std::string body, etag, contentRange; };
+    explicit HttpClient(ActivityCallback activity = {}) : activity_(std::move(activity)) {}
     bool get(const std::string& url, const std::vector<std::string>& headers, Response& out, std::string& error) const;
     bool post(const std::string& url, const std::string& body, const std::vector<std::string>& headers, Response& out, std::string& error) const;
     bool download(const std::string& url, const std::vector<std::string>& headers, LocalFile& output, uint64_t resumeAt, uint64_t expectedSize, const std::string& ifRange, std::function<bool(const std::string&)> headersAccepted, std::function<bool(uint64_t)> progress, DownloadResult& result, std::string& error) const;
+  private:
+    ActivityCallback activity_;
 };
 
 class AuthClient {

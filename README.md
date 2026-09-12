@@ -39,9 +39,10 @@ filename.
 - Use a self-hosted OAuth service with encrypted refresh tokens, expiring
   pairings, one-time claims, rate limiting, PostgreSQL storage, and HTTPS through
   Caddy.
-- Navigate the console interface with Joy-Con or Pro Controller in English (US),
-  Portuguese (Brazil), or Spanish. English (US) is the default for new and
-  migrated installations.
+- Use a native 1280×720 graphical interface with a navy/cyan theme, the Switch
+  shared system font, controller navigation, and touch targets. The interface
+  is available in English (US), Portuguese (Brazil), or Spanish; English (US)
+  is the default for new and migrated installations.
 
 ### Languages
 
@@ -61,15 +62,26 @@ immediately and is retained after relaunch.
 
 ### Controls
 
+- **D-pad / either stick:** move the highlighted card or list selection. Hold
+  a direction to repeat. Left from the first column enters the section menu;
+  Up/Down selects a section, and Right or A returns to the cards.
 - **L/R:** change the main section.
-- **A:** select or open.
-- **B:** go back.
+- **A:** activate the highlighted card, select, or open.
+- **B:** go back; on the main screen, focus the section menu.
 - **X:** download the selected Drive file.
 - **Y:** download and install the selected Drive file.
 - **Y in Library:** remove the selected managed NSP component; saves are retained.
 - **Y in Settings:** change the UI language.
 - **L while browsing:** switch between My Drive and Shared with me.
 - **+:** close the app.
+- **Touch:** select sections and action cards. Tap a file row to select it;
+  tap the selected row again to open/check it. Swipe to scroll. The footer
+  shows controller shortcuts for downloading, installing, and going back.
+
+Launch from a title override (hold **R** while opening a game) for NSP actions.
+When opened as an applet, Switch Drive keeps the UI and actions available but
+shows a persistent warning; any unavailable NCM operation is reported in the
+app instead of closing it.
 
 ## Status
 
@@ -147,15 +159,42 @@ acceptance testing.
 
 ## Build the Switch client
 
-Install devkitPro's `switch-dev`, `switch-curl`, `switch-mbedtls`, and
-`switch-jansson` packages, then run:
+Install devkitPro's `switch-dev`, `switch-curl`, `switch-mbedtls`,
+`switch-jansson`, `switch-sdl2`, and `switch-sdl2_ttf`
+packages, then run:
 
 ```sh
 make
 ```
 
 Copy `switch-drive.nro` to `sd:/switch/switch-drive/switch-drive.nro` and run
-it from hbmenu as an application (hold R while launching a game).
+it from Sphaira or hbmenu. Use application mode (hold R while launching a
+game) for NSP operations. The graphical browser does not require title override.
+
+### Startup and Sphaira
+
+Version 0.2.2 adds controller focus to the action cards and reads all eight
+controller slots plus handheld input, including both analog sticks. A always
+activates the highlighted card; X/Y still work as direct shortcuts.
+
+Version 0.2.1 fixes an NRO packaging error: setting `ROMFS` and `ICON` alone
+did not pass them to `elf2nro`. The previous artifact had no `ASET` section,
+so mandatory `romfsInit()` failed and sent the app into the terminal fallback.
+The build now embeds the icon, NACP, and RomFS, and a missing optional logo
+no longer prevents the graphical interface from opening. This follows the
+[Switch application template](https://github.com/switchbrew/switch-examples/blob/master/templates/application/Makefile).
+
+Sphaira may run under different homebrew launch modes; its name alone does
+not identify the available memory or services. Switch Drive reads the mode
+from libnx, uses smaller network buffers and a bounded text cache in applet
+mode, and records startup stages in `sd:/switch-drive/boot.log`. Network
+initialization failures are shown when an online action is attempted.
+
+Direct Sphaira launch still needs hardware acceptance. If it fails, retain
+`boot.log` immediately after that attempt, before launching through R (each
+launch replaces the log). Include the Sphaira, Atmosphère, and firmware
+versions. A missing log means execution did not reach the logged startup
+stage, or the SD log could not be written; it does not establish the cause.
 
 ## Run the pairing service
 
