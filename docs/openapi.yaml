@@ -1,0 +1,63 @@
+openapi: 3.1.0
+info:
+  title: Switch Drive Pairing API
+  version: 1.0.0
+servers:
+  - url: https://drive.example.com
+paths:
+  /health:
+    get:
+      responses: {'200': {description: Healthy}}
+  /v1/pairings:
+    post:
+      summary: Start a ten-minute Switch-to-phone pairing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [consolePublicKey]
+              properties: {consolePublicKey: {type: string}}
+      responses:
+        '201':
+          description: Pairing created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, verificationUri, code, pollSecret, expiresAt]
+                properties:
+                  id: {type: string}
+                  verificationUri: {type: string, format: uri}
+                  code: {type: string}
+                  pollSecret: {type: string}
+                  expiresAt: {type: string, format: date-time}
+  /v1/pairings/{id}:
+    get:
+      security: [{PairingSecret: []}]
+      responses:
+        '200': {description: Pairing status or approved account}
+        '410': {description: Expired}
+  /v1/pairings/{id}/claim:
+    post:
+      security: [{PairingSecret: []}]
+      responses:
+        '200': {description: Console session and account}
+        '409': {description: Not approved or already consumed}
+  /v1/accounts:
+    get:
+      security: [{ConsoleSession: []}]
+      responses: {'200': {description: Linked accounts}}
+  /v1/accounts/{id}/access-token:
+    post:
+      security: [{ConsoleSession: []}]
+      responses: {'200': {description: Short-lived Drive access token}}
+  /v1/accounts/{id}:
+    delete:
+      security: [{ConsoleSession: []}]
+      responses: {'204': {description: Account unlinked}}
+components:
+  securitySchemes:
+    PairingSecret: {type: apiKey, in: header, name: X-Pairing-Secret}
+    ConsoleSession: {type: http, scheme: bearer}
