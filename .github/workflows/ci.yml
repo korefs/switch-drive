@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-tests:
+    name: Portable C++ tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure tests
+        run: cmake -S tests -B build/tests
+      - name: Build tests
+        run: cmake --build build/tests --parallel
+      - name: Run tests
+        run: ctest --test-dir build/tests --output-on-failure
+
+  pairing-service:
+    name: Pairing service build
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+
+  switch-client:
+    name: Switch client build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build NRO with devkitPro
+        run: |
+          docker run --rm --user root \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --workdir /workspace \
+            devkitpro/devkita64:latest \
+            bash -lc 'dkp-pacman -Syu --noconfirm && dkp-pacman -S --noconfirm switch-dev switch-curl switch-mbedtls switch-jansson && make'
+      - name: Upload NRO
+        uses: actions/upload-artifact@v4
+        with:
+          name: switch-drive-nro
+          path: switch-drive.nro
+          if-no-files-found: error
