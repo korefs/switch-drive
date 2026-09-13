@@ -1,5 +1,6 @@
 #pragma once
 #include "switchdrive/core.hpp"
+#include <chrono>
 #include <functional>
 #include <string>
 #include <vector>
@@ -14,6 +15,28 @@ struct DownloadResult {
     std::string etag;
     long httpStatus{};
 };
+
+struct TransferEstimate {
+    double bytesPerSecond{};
+    uint64_t etaSeconds{};
+    bool ready{};
+};
+
+class TransferMeter {
+  public:
+    using Clock = std::chrono::steady_clock;
+    explicit TransferMeter(uint64_t initialBytes, Clock::time_point startedAt = Clock::now());
+    TransferEstimate sample(uint64_t received, uint64_t total, Clock::time_point now = Clock::now());
+  private:
+    uint64_t sampledBytes_{};
+    Clock::time_point sampledAt_;
+    double smoothedBytesPerSecond_{};
+    bool ready_{};
+};
+
+std::string formatDataSize(uint64_t bytes);
+std::string formatDuration(uint64_t seconds);
+std::string formatTransferProgress(uint64_t received, uint64_t total, const TransferEstimate& estimate);
 
 enum class RangeResponse { AcceptBody, AlreadyComplete, Reject };
 RangeResponse validateRangeResponse(long status, const std::string& contentRange, uint64_t resumeAt, uint64_t expectedSize);

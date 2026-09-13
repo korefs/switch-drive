@@ -53,6 +53,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("Resuming download", "Retomando download", "Reanudando descarga") \
  X("Transfers", "Transferências", "Transferencias") \
  X("Downloading %s", "Baixando %s", "Descargando %s") \
+ X("Installation will start automatically after verification.", "A instalação iniciará automaticamente após a verificação.", "La instalación comenzará automáticamente después de la verificación.") \
  X("Download complete.", "Download concluído.", "Descarga completada.") \
  X("Invalid download: %s", "Download inválido: %s", "Descarga inválida: %s") \
  X("Paused", "Pausado", "Pausado") \
@@ -73,7 +74,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("local file", "arquivo local", "archivo local") \
  X("removed after install", "removido após instalar", "eliminado tras instalar") \
  X("managed NSP installed", "NSP gerenciado instalado", "NSP administrado instalado") \
- X("A: check  Y: remove managed NSP  B: back", "A: verificar  Y: remover NSP gerenciado  B: voltar", "A: comprobar  Y: eliminar NSP administrado  B: volver") \
+ X("A: install/check  Y: remove managed NSP  B: back", "A: instalar/verificar  Y: remover NSP gerenciado  B: voltar", "A: instalar/comprobar  Y: eliminar NSP administrado  B: volver") \
  X("File missing", "Arquivo ausente", "Archivo ausente") \
  X("This file was not found. Remove the shortcut?  X: remove", "Este arquivo não foi encontrado. Deseja excluir o atalho?  X: excluir", "No se encontró este archivo. ¿Eliminar el acceso directo?  X: eliminar") \
  X("Remove shortcut", "Excluir atalho", "Eliminar acceso directo") \
@@ -136,6 +137,11 @@ using Catalog = std::array<const char*, textCount()>;
  X("Installation cancelled", "instalação cancelada", "instalación cancelada") \
  X("Failed to register NCA", "falha ao registrar NCA", "fallo al registrar NCA") \
  X("Failed to commit NCM metadata", "falha ao confirmar metadados NCM", "fallo al confirmar metadatos NCM") \
+ X("Content installed, but the Home Menu record could not be updated", "Conteúdo instalado, mas não foi possível atualizar o registro do menu HOME", "Contenido instalado, pero no se pudo actualizar el registro del menú HOME") \
+ X("Installation complete.", "Instalação concluída.", "Instalación completada.") \
+ X("Updates and DLC do not create a new HOME icon.", "Atualizações e DLC não criam um novo ícone no menu HOME.", "Las actualizaciones y los DLC no crean un icono nuevo en el menú HOME.") \
+ X("Downloaded item is missing from the library", "Item baixado não foi encontrado na biblioteca", "El elemento descargado no está en la biblioteca") \
+ X("This file type cannot be installed", "Este tipo de arquivo não pode ser instalado", "Este tipo de archivo no se puede instalar") \
  X("Content installed; journal could not be updated", "conteúdo instalado; diário não pôde ser atualizado", "contenido instalado; no se pudo actualizar el diario") \
  X("NSP recovery requires the console", "Recuperação NSP exige o console", "La recuperación NSP requiere la consola") \
  X("NCM unavailable during recovery", "NCM indisponível durante recuperação", "NCM no disponible durante la recuperación") \
@@ -195,7 +201,15 @@ using Catalog = std::array<const char*, textCount()>;
  X("NSP read out of bounds", "leitura NSP fora dos limites", "lectura NSP fuera de límites") \
  X("X: restart   B: cancel", "X: reiniciar   B: cancelar", "X: reiniciar   B: cancelar") \
  X("A: resume   X: restart   B: cancel", "A: retomar   X: reiniciar   B: cancelar", "A: reanudar   X: reiniciar   B: cancelar") \
- X("%llu / %llu bytes", "%llu / %llu bytes", "%llu / %llu bytes") \
+ X("%s / %s · %.1f%% · Calculating speed...", "%s / %s · %.1f%% · Calculando velocidade...", "%s / %s · %.1f%% · Calculando velocidad...") \
+ X("%s / %s · %.1f%% · %s/s · ETA %s", "%s / %s · %.1f%% · %s/s · ETA %s", "%s / %s · %.1f%% · %s/s · ETA %s") \
+ X("%llu B", "%llu B", "%llu B") \
+ X("%.1f KiB", "%.1f KiB", "%.1f KiB") \
+ X("%.1f MiB", "%.1f MiB", "%.1f MiB") \
+ X("%.1f GiB", "%.1f GiB", "%.1f GiB") \
+ X("%llus", "%llus", "%llus") \
+ X("%llum %02llus", "%llum %02llus", "%llum %02llus") \
+ X("%lluh %02llum", "%lluh %02llum", "%lluh %02llum") \
  X("Graphics unavailable: %s", "Gráficos indisponíveis: %s", "Gráficos no disponibles: %s") \
  X("Application mode (R + game) recommended for NSP.", "Para NSP, use o modo aplicação (R + jogo).", "Para NSP, usa el modo aplicación (R + juego).") \
  X("Operation cancelled", "Operação cancelada", "Operación cancelada") \

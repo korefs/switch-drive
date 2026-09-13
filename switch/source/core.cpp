@@ -17,6 +17,8 @@ namespace fs = std::filesystem;
 namespace switchdrive {
 namespace {
 
+constexpr size_t kFileBufferSize = 256 * 1024;
+
 const char* taskStateName(TaskState state) {
     switch (state) {
         case TaskState::Queued: return "queued";
@@ -117,6 +119,21 @@ std::string escape(const std::string& value) {
         else result += c;
     }
     return result;
+}
+
+bool replaceWithBackup(const fs::path& temporary, const fs::path& current, const fs::path& backup, std::string& error) {
+    std::error_code ec;
+    const bool hasCurrent = fs::exists(current, ec);
+    if (ec) { error = ec.message(); return false; }
+    if (hasCurrent) {
+        fs::remove(backup, ec);
+        if (ec) { error = ec.message(); return false; }
+        fs::rename(current, backup, ec);
+        if (ec) { error = ec.message(); return false; }
+    }
+    fs::rename(temporary, current, ec);
+    if (ec) { error = ec.message(); return false; }
+    return true;
 }
 
 std::string stringField(const std::string& json, const std::string& key) {
@@ -296,8 +313,12 @@ LocalFile& LocalFile::operator=(LocalFile&& other) noexcept {
     writable_ = other.writable_;
     file_ = other.file_;
     opened_ = other.opened_;
+    nextWriteOffset_ = other.nextWriteOffset_;
+    nextWriteOffsetKnown_ = other.nextWriteOffsetKnown_;
+    ioBuffer_ = std::move(other.ioBuffer_);
     other.file_ = nullptr;
     other.opened_ = false;
+    other.nextWriteOffsetKnown_ = false;
     return *this;
 }
 
@@ -314,6 +335,12 @@ bool LocalFile::openRegular(bool create, std::string& error) {
         error = i18n::tr(i18n::TextId::LogicalFileOpenFailed);
         return false;
     }
+    ioBuffer_.clear();
+    if (writable_) {
+        ioBuffer_.resize(kFileBufferSize);
+        if (std::setvbuf(file_, ioBuffer_.data(), _IOFBF, ioBuffer_.size()) != 0) ioBuffer_.clear();
+    }
+    nextWriteOffsetKnown_ = false;
     opened_ = true;
     return true;
 }
@@ -406,6 +433,7 @@ bool LocalFile::readAt(uint64_t offset, void* buffer, size_t amount, std::string
         return true;
     }
 #endif
+    nextWriteOffsetKnown_ = false;
     if (!seekFile(file_, offset, error)) return false;
     if (std::fread(buffer, 1, amount, file_) != amount) {
         error = i18n::tr(i18n::TextId::LogicalFileReadFailed);
@@ -448,11 +476,15 @@ bool LocalFile::writeAt(uint64_t offset, const void* buffer, size_t amount, std:
         return true;
     }
 #endif
-    if (!seekFile(file_, offset, error)) return false;
+    if (!nextWriteOffsetKnown_ || nextWriteOffset_ != offset) {
+        if (!seekFile(file_, offset, error)) return false;
+    }
     if (std::fwrite(buffer, 1, amount, file_) != amount) {
         error = i18n::tr(i18n::TextId::LogicalFileWriteFailed);
         return false;
     }
+    nextWriteOffset_ = offset + amount;
+    nextWriteOffsetKnown_ = true;
     return true;
 }
 
@@ -488,6 +520,8 @@ bool LocalFile::size(uint64_t& out, std::string& error) const {
         return false;
     }
     out = static_cast<uint64_t>(position);
+    nextWriteOffset_ = out;
+    nextWriteOffsetKnown_ = writable_;
     return true;
 }
 
@@ -523,6 +557,7 @@ bool LocalFile::truncate(uint64_t targetSize, std::string& error) {
         return true;
     }
 #endif
+    nextWriteOffsetKnown_ = false;
     return truncateFile(file_, targetSize, error);
 }
 
@@ -545,6 +580,8 @@ void LocalFile::close() {
     if (file_) std::fclose(file_);
     file_ = nullptr;
     opened_ = false;
+    nextWriteOffsetKnown_ = false;
+    ioBuffer_.clear();
 }
 
 bool LocalFile::exists(const fs::path& path, StorageKind kind) {
@@ -711,21 +748,7 @@ bool StateStore::save(const State& state, std::string& error) {
         error = i18n::tr(i18n::TextId::StateWriteFailed);
         return false;
     }
-    if (fs::exists(current, ec)) {
-        fs::copy_file(current, backup, fs::copy_options::overwrite_existing, ec);
-        if (ec) {
-            error = ec.message();
-            return false;
-        }
-    }
-    fs::rename(temporary, current, ec);
-    if (ec) {
-        fs::remove(current, ec);
-        ec.clear();
-        fs::rename(temporary, current, ec);
-    }
-    if (ec) error = ec.message();
-    return !ec;
+    return replaceWithBackup(temporary, current, backup, error);
 }
 
 bool StateStore::loadInstallJournal(NspInstallJournal& journal, std::string& error, bool& exists) const {
@@ -801,9 +824,7 @@ bool StateStore::saveInstallJournal(const NspInstallJournal& journal, std::strin
     const bool wrote = std::fwrite(encoded.data(), 1, encoded.size(), output) == encoded.size() && std::fflush(output) == 0 && ::fsync(::fileno(output)) == 0;
     std::fclose(output);
     if (!wrote) { error = i18n::tr(i18n::TextId::JournalSyncFailed); return false; }
-    if (fs::exists(current, ec)) { fs::copy_file(current, backup, fs::copy_options::overwrite_existing, ec); if (ec) { error = ec.message(); return false; } }
-    fs::rename(temporary, current, ec);
-    if (ec) { error = ec.message(); return false; }
+    if (!replaceWithBackup(temporary, current, backup, error)) return false;
 #ifdef __SWITCH__
     const Result rc = fsdevCommitDevice("sdmc");
     if (R_FAILED(rc)) { error = i18n::tr(i18n::TextId::JournalCommitFailed); return false; }

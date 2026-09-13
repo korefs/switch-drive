@@ -140,6 +140,9 @@ class LocalFile {
     bool writable_{};
     std::FILE* file_{};
     bool opened_{};
+    mutable uint64_t nextWriteOffset_{};
+    mutable bool nextWriteOffsetKnown_{};
+    std::vector<char> ioBuffer_;
 
     std::filesystem::path segmentPath(uint64_t index) const;
     bool openRegular(bool create, std::string& error);

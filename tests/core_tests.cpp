@@ -134,6 +134,20 @@ int main() {
     assert(std::string(nspContentKindName(NspContentKind::Update)) == "Actualización");
     assert(std::string(nspInstallStorageName(NspInstallStorage::InternalUser)) == "Memoria interna");
     setLanguage(Language::EnUs);
+    assert(formatDataSize(0) == "0 B");
+    assert(formatDataSize(1536) == "1.5 KiB");
+    assert(formatDataSize(3 * 1024 * 1024 + 512 * 1024) == "3.5 MiB");
+    assert(formatDataSize(5ULL * 1024 * 1024 * 1024) == "5.0 GiB");
+    assert(formatDuration(9) == "9s" && formatDuration(65) == "1m 05s" && formatDuration(7380) == "2h 03m");
+    const auto transferStarted = TransferMeter::Clock::time_point{};
+    TransferMeter transferMeter(100, transferStarted);
+    TransferEstimate transfer = transferMeter.sample(100, 1100, transferStarted + std::chrono::milliseconds(250));
+    assert(!transfer.ready);
+    transfer = transferMeter.sample(600, 1100, transferStarted + std::chrono::seconds(1));
+    assert(transfer.ready && transfer.bytesPerSecond == 500 && transfer.etaSeconds == 1);
+    assert(formatTransferProgress(600, 1100, transfer).find("ETA 1s") != std::string::npos);
+    transfer = transferMeter.sample(2100, 10000, transferStarted + std::chrono::seconds(2));
+    assert(transfer.ready && transfer.bytesPerSecond == 750 && transfer.etaSeconds == 11);
     assert(sanitizeFileName("../Mario Kart: 8.nsp") == "..Mario_Kart_8.nsp");
     assert(extensionOf("DEMO.NRO") == ".nro");
     assert(isNsp("x.nsp") && !isNsp("x.nsz"));
@@ -144,6 +158,16 @@ int main() {
     const fs::path root = fs::temp_directory_path() / ("switch-drive-test-" + makeId());
     fs::create_directories(root);
     std::string error;
+
+    const auto regularPath = root / "sequential.bin";
+    LocalFile regular;
+    assert(regular.create(regularPath, StorageKind::Regular, error));
+    assert(regular.writeAt(0, "abcd", 4, error));
+    assert(regular.writeAt(4, "efgh", 4, error));
+    assert(regular.flush(error));
+    uint64_t regularSize{};
+    assert(regular.size(regularSize, error) && regularSize == 8);
+    regular.close();
 
     // The host concatenated implementation uses an injectable 8-byte segment
     // size so every operation crosses several physical files.
@@ -209,10 +233,19 @@ int main() {
     library.storageKind = StorageKind::Regular;
     saved.library.push_back(library);
     assert(store.save(saved, error));
+    saved.sessionToken = "updated-token";
+    assert(store.save(saved, error));
+    saved.sessionToken = "latest-token";
+    assert(store.save(saved, error));
     State loaded = store.load();
-    assert(loaded.schemaVersion == 4 && loaded.language == "es-ES" && loaded.tasks.size() == 1 && loaded.library.size() == 1);
+    assert(loaded.schemaVersion == 4 && loaded.language == "es-ES" && loaded.sessionToken == "latest-token" && loaded.tasks.size() == 1 && loaded.library.size() == 1);
     assert(loaded.tasks[0].committedBytes == task.committedBytes && loaded.tasks[0].storageKind == StorageKind::Concatenated);
     assert(loaded.tasks[0].revision == "42" && loaded.tasks[0].etag == "\"etag\"");
+    {
+        std::ifstream backup(root / "state-v2" / "state.json.bak");
+        const std::string contents((std::istreambuf_iterator<char>(backup)), {});
+        assert(contents.find("updated-token") != std::string::npos && contents.find("latest-token") == std::string::npos);
+    }
     for (const char* language : {"en-US", "pt-BR", "es-ES"}) {
         State languageState;
         languageState.language = language;
@@ -258,8 +291,17 @@ int main() {
     savedJournal.package = policy; savedJournal.package.metaId = "0100000000000800";
     savedJournal.contents.push_back({"00112233445566778899aabbccddeeff", "ffeeddccbbaa99887766554433221100", true});
     assert(store.saveInstallJournal(savedJournal, error));
+    savedJournal.phase = "registered";
+    assert(store.saveInstallJournal(savedJournal, error));
+    savedJournal.phase = "finalized";
+    assert(store.saveInstallJournal(savedJournal, error));
     NspInstallJournal loadedJournal; bool journalExists = false;
-    assert(store.loadInstallJournal(loadedJournal, error, journalExists) && journalExists && loadedJournal.contents.size() == 1 && loadedJournal.package.metaId == savedJournal.package.metaId);
+    assert(store.loadInstallJournal(loadedJournal, error, journalExists) && journalExists && loadedJournal.phase == "finalized" && loadedJournal.contents.size() == 1 && loadedJournal.package.metaId == savedJournal.package.metaId);
+    {
+        std::ifstream backup(root / "state-v2" / "install-journal.json.bak");
+        const std::string contents((std::istreambuf_iterator<char>(backup)), {});
+        assert(contents.find("\"phase\":\"registered\"") != std::string::npos && contents.find("\"phase\":\"finalized\"") == std::string::npos);
+    }
     assert(store.clearInstallJournal(error));
 
     assert(validateRangeResponse(200, "", 0, 100) == RangeResponse::AcceptBody);

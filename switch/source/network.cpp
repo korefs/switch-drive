@@ -147,6 +147,7 @@ bool configure(CURL* curl, const std::vector<std::string>& headers, curl_slist*&
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 512L * 1024L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "SwitchDrive/0.2");
     if (activity && *activity) {
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);

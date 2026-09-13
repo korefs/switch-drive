@@ -101,6 +101,86 @@ bool hexToBytes(const std::string& value, uint8_t* output, size_t size) {
 uint64_t contentSize(const ContentInfoRaw& content) { return (static_cast<uint64_t>(content.sizeHigh) << 32) | content.sizeLow; }
 bool isNcaFileName(const std::string& name, const std::string& id, bool meta) { return name == id + (meta ? ".cnmt.nca" : ".nca"); }
 #ifdef __SWITCH__
+struct ApplicationRecordMeta {
+    NcmContentMetaKey key;
+    uint64_t storageId;
+};
+static_assert(sizeof(ApplicationRecordMeta) == 0x18);
+
+Result openApplicationManager(Service& owned, Service*& active) {
+    if (hosversionAtLeast(3, 0, 0)) {
+        const Result rc = nsGetApplicationManagerInterface(&owned);
+        active = &owned;
+        return rc;
+    }
+    active = nsGetServiceSession_ApplicationManagerInterface();
+    return 0;
+}
+
+void closeApplicationManager(Service& owned) {
+    if (hosversionAtLeast(3, 0, 0)) serviceClose(&owned);
+}
+
+Result listApplicationRecordMeta(uint64_t applicationId, ApplicationRecordMeta* output, size_t capacity, uint32_t& count) {
+    Service owned{}; Service* active{};
+    Result rc = openApplicationManager(owned, active);
+    const struct { uint64_t offset, applicationId; } input{0, applicationId};
+    if (R_SUCCEEDED(rc)) rc = serviceDispatchInOut(active, 17, input, count,
+        .buffer_attrs = {SfBufferAttr_HipcMapAlias | SfBufferAttr_Out},
+        .buffers = {{output, capacity * sizeof(ApplicationRecordMeta)}});
+    closeApplicationManager(owned);
+    return rc;
+}
+
+Result deleteApplicationRecord(uint64_t applicationId) {
+    Service owned{}; Service* active{};
+    Result rc = openApplicationManager(owned, active);
+    if (R_SUCCEEDED(rc)) rc = serviceDispatchIn(active, 27, applicationId);
+    closeApplicationManager(owned);
+    return rc;
+}
+
+Result pushApplicationRecord(uint64_t applicationId, const std::vector<ApplicationRecordMeta>& records) {
+    Service owned{}; Service* active{};
+    Result rc = openApplicationManager(owned, active);
+    const struct { uint8_t event, padding[7]; uint64_t applicationId; } input{3, {}, applicationId};
+    if (R_SUCCEEDED(rc)) rc = serviceDispatchIn(active, 16, input,
+        .buffer_attrs = {SfBufferAttr_HipcMapAlias | SfBufferAttr_In},
+        .buffers = {{records.data(), records.size() * sizeof(ApplicationRecordMeta)}});
+    closeApplicationManager(owned);
+    return rc;
+}
+
+bool applicationNotFound(Result rc) { return R_MODULE(rc) == 16 && R_DESCRIPTION(rc) == 2; }
+
+bool refreshApplicationRecord(const NspPackageInfo& package, const NcmContentMetaKey& key, NcmStorageId storage, std::string& error) {
+    uint64_t applicationId{};
+    std::stringstream stream; stream << std::hex << package.baseTitleId; stream >> applicationId;
+    Result rc = nsInitialize();
+    if (R_FAILED(rc)) { error = i18n::tr(i18n::TextId::ApplicationRecordUpdateFailed); return false; }
+    s32 count{};
+    rc = nsCountApplicationContentMeta(applicationId, &count);
+    if (R_FAILED(rc) && !applicationNotFound(rc)) { nsExit(); error = i18n::tr(i18n::TextId::ApplicationRecordUpdateFailed); return false; }
+    if (R_FAILED(rc)) count = 0;
+    if (count < 0 || count > 4096) { nsExit(); error = i18n::tr(i18n::TextId::ApplicationRecordUpdateFailed); return false; }
+    std::vector<ApplicationRecordMeta> previous(static_cast<size_t>(count));
+    if (count) {
+        uint32_t written{};
+        rc = listApplicationRecordMeta(applicationId, previous.data(), previous.size(), written);
+        if (R_FAILED(rc) || written > previous.size()) { nsExit(); error = i18n::tr(i18n::TextId::ApplicationRecordUpdateFailed); return false; }
+        previous.resize(written);
+    }
+    std::vector<ApplicationRecordMeta> updated = previous;
+    updated.push_back({key, static_cast<uint64_t>(storage)});
+    rc = deleteApplicationRecord(applicationId);
+    if (R_FAILED(rc) && !applicationNotFound(rc)) { nsExit(); error = i18n::tr(i18n::TextId::ApplicationRecordUpdateFailed); return false; }
+    rc = pushApplicationRecord(applicationId, updated);
+    if (R_FAILED(rc) && !previous.empty()) pushApplicationRecord(applicationId, previous);
+    nsExit();
+    if (R_FAILED(rc)) { error = i18n::tr(i18n::TextId::ApplicationRecordUpdateFailed); return false; }
+    return true;
+}
+
 bool importPackageTicket(const Pfs0& pfs0, NspInstallJournal& journal, std::string& error) {
     const Pfs0Entry* ticket = nullptr; const Pfs0Entry* certificate = nullptr;
     for (const auto& entry : pfs0.entries()) { if (extensionOf(entry.name) == ".tik") ticket = &entry; if (extensionOf(entry.name) == ".cert") certificate = &entry; }
@@ -238,7 +318,7 @@ bool NspInstaller::queryInstalled(const NspPackageInfo& package, std::vector<Ins
         item.version = status.version; item.metaId = package.metaId; item.baseTitleId = package.baseTitleId; item.kind = package.kind; installed.push_back(std::move(item));
     }
     nsExit(); ncmExit();
-    if (R_FAILED(rc)) { error = i18n::tr(i18n::TextId::InstalledQueryFailed); return false; }
+    if (R_FAILED(rc) && !applicationNotFound(rc)) { error = i18n::tr(i18n::TextId::InstalledQueryFailed); return false; }
     return true;
 #endif
 }
@@ -310,6 +390,7 @@ bool NspInstaller::install(const fs::path& source, StorageKind kind, const NspPa
         auto* infos = reinterpret_cast<NcmContentInfo*>(metadata.data() + sizeof(*header) + package.extendedHeader.size());
         for (size_t i = 0; i < all.size(); ++i) { hexToBytes(all[i].id, infos[i].content_id.c, sizeof(infos[i].content_id.c)); ncmU64ToContentInfoSize(all[i].size, &infos[i]); infos[i].content_type = all[i].type; }
         if (R_FAILED(ncmContentMetaDatabaseSet(&database, &key, metadata.data(), metadata.size())) || R_FAILED(ncmContentMetaDatabaseCommit(&database))) { error = i18n::tr(i18n::TextId::MetadataCommitFailed); goto rollback; }
+        if (!refreshApplicationRecord(package, key, storageId, error)) { ncmContentMetaDatabaseClose(&database); ncmContentStorageClose(&contentStorage); ncmExit(); appletUnlockExit(); return false; }
         journal.phase = "committed"; if (!store.saveInstallJournal(journal, error)) { error = i18n::tr(i18n::TextId::JournalUpdateAfterInstallFailed); }
     }
     ncmContentMetaDatabaseClose(&database); ncmContentStorageClose(&contentStorage); ncmExit(); appletUnlockExit();
@@ -345,6 +426,12 @@ bool NspInstaller::recover(StateStore& store, NspInstallJournal& journal, std::s
         NcmContentStorage storage{}; const auto id = journal.targetStorage == NspInstallStorage::InternalUser ? NcmStorageId_BuiltInUser : NcmStorageId_SdCard;
         rc = ncmOpenContentStorage(&storage, id); if (R_SUCCEEDED(rc)) for (const auto& item : journal.contents) if (item.created && !item.placeholderId.empty()) { uint8_t bytes[16]{}; if (hexToBytes(item.placeholderId, bytes, sizeof(bytes))) { NcmPlaceHolderId holder{}; std::memcpy(holder.uuid.uuid, bytes, sizeof(bytes)); ncmContentStorageDeletePlaceHolder(&storage, &holder); } }
         ncmContentStorageClose(&storage); ncmExit();
+    }
+    if (journal.operation == "install" && committed) {
+        uint64_t title{}; std::stringstream stream; stream << std::hex << journal.package.metaId; stream >> title;
+        NcmContentMetaKey key{}; key.id = title; key.version = journal.package.version; key.type = journal.package.kind == NspContentKind::BaseGame ? NcmContentMetaType_Application : journal.package.kind == NspContentKind::Update ? NcmContentMetaType_Patch : NcmContentMetaType_AddOnContent; key.install_type = NcmContentInstallType_Full;
+        const auto storage = journal.targetStorage == NspInstallStorage::InternalUser ? NcmStorageId_BuiltInUser : NcmStorageId_SdCard;
+        if (!refreshApplicationRecord(journal.package, key, storage, error)) return false;
     }
     if (!store.clearInstallJournal(error)) return false;
     journal = {}; return true;

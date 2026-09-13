@@ -32,6 +32,8 @@ constexpr const char* kRoot = "sdmc:/switch-drive";
 constexpr const char* kDefaultService = "";
 constexpr uint64_t kCheckpointBytes = 64ULL * 1024ULL * 1024ULL;
 constexpr auto kCheckpointInterval = std::chrono::seconds(10);
+constexpr auto kTransferUiInterval = std::chrono::milliseconds(100);
+std::chrono::steady_clock::time_point lastNetworkUiAt{};
 void title(const char* page) {
     consoleClear();
     ui::instance().setHeader(page);
@@ -77,6 +79,9 @@ void waitForButton() {
 }
 
 bool pumpUi() {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastNetworkUiAt < kTransferUiInterval) return appletMainLoop();
+    lastNetworkUiAt = now;
     consoleUpdate(nullptr);
     hidScanInput();
     return appletMainLoop() && !(hidKeysDown(CONTROLLER_P1_AUTO) & HidNpadButton_B);
@@ -328,10 +333,12 @@ bool verifyAndRecord(StateStore& store, State& state, Task& task, std::string& e
     return store.save(state, error);
 }
 
-void installIfRequested(StateStore& store, State& state, Task& task) {
-    if (!task.installAfterDownload || state.library.empty()) return;
+void installDownloaded(StateStore& store, State& state, Task& task) {
     auto library = std::find_if(state.library.begin(), state.library.end(), [&](const LibraryItem& item) { return item.id == task.id; });
-    if (library == state.library.end()) return;
+    if (library == state.library.end()) {
+        printf(tr(TextId::InstallFailed), tr(TextId::DownloadRecordMissing)); printf("\n");
+        return;
+    }
     std::string error;
     bool installed = false;
     if (isNro(task.displayName)) {
@@ -355,7 +362,7 @@ void installIfRequested(StateStore& store, State& state, Task& task) {
                 library->installed = InstallKind::Nsp; library->nspContentKind = package.kind; library->nspMetaId = package.metaId; library->nspBaseTitleId = package.baseTitleId; library->nspVersion = package.version; library->nspInstallState = NspInstallState::Installed;
             } else {
                 NspInstallStorage destination;
-                if (!chooseNspDestination(package, existing, destination)) return;
+                if (!chooseNspDestination(package, existing, destination)) { printf("\n%s\n", tr(TextId::InstallCancelled)); return; }
                 NspInstallJournal journal; journal.libraryId = library->id; journal.localPath = task.localPath; journal.deletePackage = task.deleteAfterInstall;
                 library->nspInstallState = NspInstallState::Installing; saveOrShow(store, state);
                 installed = installer.install(task.localPath, task.storageKind, package, destination, store, journal, [](uint64_t current, uint64_t total) { ui::instance().setProgress(current, total); printf("\r"); printf(tr(TextId::InstallingBytes), static_cast<unsigned long long>(current), static_cast<unsigned long long>(total)); consoleUpdate(nullptr); return appletMainLoop(); }, error);
@@ -368,6 +375,7 @@ void installIfRequested(StateStore& store, State& state, Task& task) {
             library->nspInstallState = NspInstallState::Installed;
         }
     } else {
+        printf(tr(TextId::InstallFailed), tr(TextId::UnsupportedInstallType)); printf("\n");
         return;
     }
     if (!installed) {
@@ -383,6 +391,8 @@ void installIfRequested(StateStore& store, State& state, Task& task) {
         }
     }
     saveOrShow(store, state);
+    printf("\n%s\n", tr(TextId::InstallComplete));
+    if (library->installed == InstallKind::Nsp && library->nspContentKind != NspContentKind::BaseGame) printf("%s\n", tr(TextId::NonBaseHomeHint));
 }
 
 void downloadFile(StateStore& store, State& state, const RemoteFile& remote, bool installAfter) {
@@ -421,7 +431,8 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
         }
         applyRemote(*task, remote, state.lastAccountId, store);
     }
-    task->installAfterDownload = task->installAfterDownload || installAfter;
+    const bool installRequested = task->installAfterDownload || installAfter;
+    task->installAfterDownload = installRequested;
     task->deleteAfterInstall = state.deleteAfterInstall;
     task->state = TaskState::Queued;
     task->error.clear();
@@ -470,6 +481,9 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
     title(tr(task->committedBytes ? TextId::ResumingDownload : TextId::Transfers));
     ui::instance().setProgress(task->committedBytes, task->expectedSize);
     printf(tr(TextId::Downloading), task->displayName.c_str()); printf("\n");
+    if (installRequested) printf("%s\n", tr(TextId::InstallAfterDownloadQueued));
+    TransferMeter transferMeter(task->committedBytes);
+    auto lastProgressAt = std::chrono::steady_clock::time_point{};
     auto lastCheckpoint = task->committedBytes;
     auto lastCheckpointAt = std::chrono::steady_clock::now();
     DownloadResult result;
@@ -485,17 +499,19 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
             return store.save(state, error);
         },
         [&](uint64_t received) {
-            ui::instance().setProgress(received, task->expectedSize);
-            printf("\r"); printf(tr(TextId::BytesProgress), static_cast<unsigned long long>(received), static_cast<unsigned long long>(task->expectedSize)); printf("   ");
             const auto now = std::chrono::steady_clock::now();
+            if (received == task->expectedSize || now - lastProgressAt >= kTransferUiInterval) {
+                ui::instance().setProgress(received, task->expectedSize);
+                const std::string progress = formatTransferProgress(received, task->expectedSize, transferMeter.sample(received, task->expectedSize, now));
+                printf("\r%s   ", progress.c_str());
+                lastProgressAt = now;
+            }
             if (received - lastCheckpoint >= kCheckpointBytes && now - lastCheckpointAt >= kCheckpointInterval) {
                 if (!checkpointTask(store, state, *task, output, error)) return false;
                 lastCheckpoint = task->committedBytes;
                 lastCheckpointAt = now;
             }
-            consoleUpdate(nullptr);
-            hidScanInput();
-            return appletMainLoop() && !(hidKeysDown(CONTROLLER_P1_AUTO) & HidNpadButton_B);
+            return appletMainLoop();
         },
         result,
         error);
@@ -521,7 +537,7 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
         return;
     }
     printf("\n%s\n", tr(TextId::DownloadComplete));
-    installIfRequested(store, state, *task);
+    if (installRequested) installDownloaded(store, state, *task);
     waitForButton();
 }
 
@@ -625,8 +641,10 @@ void browse(StateStore& store, State& state) {
             if (files.empty()) { consoleUpdate(nullptr); continue; }
             auto& file = files[selected];
             if (pressed & HidNpadButton_A && file.folder) { parents.push_back(folder); folder = file.id; shared = false; reload = true; refresh = true; }
-            if ((pressed & HidNpadButton_X) && file.canDownload && !file.folder) { downloadFile(store, state, file, false); refresh = true; }
-            if ((pressed & HidNpadButton_Y) && file.canDownload && !file.folder) { downloadFile(store, state, file, true); refresh = true; }
+            if ((pressed & (HidNpadButton_X | HidNpadButton_Y)) && file.canDownload && !file.folder) {
+                downloadFile(store, state, file, (pressed & HidNpadButton_Y) != 0);
+                refresh = true;
+            }
             consoleUpdate(nullptr);
         }
         state.lastFolderId = folder;
@@ -667,6 +685,15 @@ void library(StateStore& store, State& state) {
                     if (confirmation & HidNpadButton_B) break;
                     consoleUpdate(nullptr);
                 }
+            } else if (item.localState == LocalState::Present && isNsp(item.name)) {
+                const auto task = std::find_if(state.tasks.begin(), state.tasks.end(), [&](const Task& candidate) { return candidate.id == item.id; });
+                if (task == state.tasks.end()) {
+                    printf("\n"); printf(tr(TextId::InstallFailed), tr(TextId::DownloadRecordMissing)); printf("\n");
+                } else {
+                    task->installAfterDownload = true;
+                    installDownloaded(store, state, *task);
+                }
+                waitForButton();
             }
             return;
         }
