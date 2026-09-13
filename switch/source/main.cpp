@@ -161,12 +161,14 @@ bool connectAccount(StateStore& store, State& state) {
     }
     if (state.consolePublicKey.empty()) state.consolePublicKey = makeId() + makeId();
     AuthClient auth(activeHttp(), state.serviceUrl);
-    std::string id, url, code, pollSecret, error;
-    if (!auth.begin(state.consolePublicKey, id, url, code, pollSecret, error)) {
+    std::string id, url, qrUrl, code, pollSecret, error;
+    if (!auth.begin(state.consolePublicKey, id, url, qrUrl, code, pollSecret, error)) {
         printf(tr(TextId::StartFailed), error.c_str()); printf("\n");
         waitForButton();
         return false;
     }
+    ui::instance().setSubtitle(tr(TextId::ScanWithPhone));
+    ui::instance().setQrCode(qrUrl);
     printf("%s\n\x1b[36m%s\x1b[0m\n\n%s: \x1b[33;1m%s\x1b[0m\n", tr(TextId::OpenOnPhone), url.c_str(), tr(TextId::Code), code.c_str());
     hint(tr(TextId::CheckNow));
     while (appletMainLoop()) {

@@ -13,7 +13,7 @@ enum class TextId {
     AppName, Continue,
     InstallNsp, BaseGame, Update, Dlc, TitleId, Version, InstalledVersion,
     SdCard, InternalStorage, Confirm, Cancel, DestinationHint,
-    ConnectDrive, ConfigMissing, StartFailed, OpenOnPhone, Code, CheckNow,
+    ConnectDrive, ConfigMissing, StartFailed, OpenOnPhone, Code, CheckNow, ScanWithPhone,
     Connected, ConnectAccountFirst, RemoteChanged, PartialDownloadFound,
     BytesConfirmed, RemoteVersionChanged, PartialPreserved, Restart, Resume,
     PartialIdentityMissing, PartialTooLarge, DownloadAlreadyExists,

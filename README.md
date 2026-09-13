@@ -226,6 +226,15 @@ The Switch client obtains its service URL from `sd:/switch-drive/config.json`:
 {"service_url":"https://drive.example.com"}
 ```
 
+## Run the pairing service on Cloudflare Workers
+
+The optional [`worker/`](worker/README.md) deployment target runs the same
+pairing API on a public HTTPS Worker. It requires a managed PostgreSQL database
+through Cloudflare Hyperdrive; do not expose the Docker PostgreSQL service on a
+home network to the Internet. After configuring a custom domain and registering
+`https://<host>/oauth/google/callback` in Google Cloud, deploy it with Wrangler
+and use that public HTTPS origin as `service_url`.
+
 ## Security and data handling
 
 The client never stores Google refresh tokens. It stores only a console session

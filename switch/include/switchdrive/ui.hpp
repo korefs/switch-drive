@@ -53,6 +53,7 @@ class Ui {
     int takeRowSelection();
     void setAppletWarning(const std::string& text);
     void setProgress(uint64_t current, uint64_t total);
+    void setQrCode(const std::string& content);
     void write(const std::string& text);
     void present();
     void scanInput();

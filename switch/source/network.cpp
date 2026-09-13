@@ -290,14 +290,14 @@ bool HttpClient::download(const std::string& url, const std::vector<std::string>
     return true;
 }
 
-bool AuthClient::begin(const std::string& consoleKey, std::string& id, std::string& url, std::string& code, std::string& pollSecret, std::string& error) const {
+bool AuthClient::begin(const std::string& consoleKey, std::string& id, std::string& url, std::string& qrUrl, std::string& code, std::string& pollSecret, std::string& error) const {
     HttpClient::Response response;
     if (!http_.post(serviceUrl_ + "/v1/pairings", "{\"consolePublicKey\":\"" + consoleKey + "\"}", {}, response, error)) return false;
     json_t* root = parse(response.body, error);
     if (!root) return false;
-    id = str(root, "id"); url = str(root, "verificationUri"); code = str(root, "code"); pollSecret = str(root, "pollSecret");
+    id = str(root, "id"); url = str(root, "verificationUri"); qrUrl = str(root, "verificationUriComplete"); code = str(root, "code"); pollSecret = str(root, "pollSecret");
     json_decref(root);
-    if (id.empty() || url.empty() || code.empty() || pollSecret.empty()) {
+    if (id.empty() || url.empty() || qrUrl.empty() || code.empty() || pollSecret.empty()) {
         error = i18n::tr(i18n::TextId::PairingResponseIncomplete);
         return false;
     }

@@ -32,7 +32,7 @@ class HttpClient {
 class AuthClient {
   public:
     AuthClient(HttpClient http, std::string serviceUrl) : http_(std::move(http)), serviceUrl_(std::move(serviceUrl)) {}
-    bool begin(const std::string& consoleKey, std::string& id, std::string& url, std::string& code, std::string& pollSecret, std::string& error) const;
+    bool begin(const std::string& consoleKey, std::string& id, std::string& url, std::string& qrUrl, std::string& code, std::string& pollSecret, std::string& error) const;
     bool poll(const std::string& id, const std::string& pollSecret, Account& account, std::string& error) const;
     bool claim(const std::string& id, const std::string& pollSecret, std::string& session, Account& account, std::string& error) const;
     bool accounts(const std::string& session, std::vector<Account>& accounts, std::string& error) const;

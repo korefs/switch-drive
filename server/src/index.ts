@@ -2,7 +2,7 @@ import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
 import rateLimit from '@fastify/rate-limit';
 import sensible from '@fastify/sensible';
-import Fastify, {FastifyRequest} from 'fastify';
+import Fastify, {FastifyReply, FastifyRequest} from 'fastify';
 import {OAuth2Client} from 'google-auth-library';
 import {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
@@ -67,7 +67,7 @@ app.post('/v1/pairings', {config: {rateLimit: {max: 10, timeWindow: '1 minute'}}
   await db.query(
     `INSERT INTO pairings (id, code_hash, poll_secret_hash, console_key_hash, status, expires_at) VALUES ($1,$2,$3,$4,'pending',$5)`,
     [id, hash(code), hash(pollSecret), consoleKeyHash, expiresAt]);
-  return reply.code(201).send({id, code, pollSecret, verificationUri: `${origin}/pair/${id}`, expiresAt: expiresAt.toISOString()});
+  return reply.code(201).send({id, code, pollSecret, verificationUri: `${origin}/pair/${id}`, verificationUriComplete: `${origin}/pair/${id}/scan/${code}`, expiresAt: expiresAt.toISOString()});
 });
 
 app.get('/pair/:id', async (request, reply) => {
@@ -77,9 +77,7 @@ app.get('/pair/:id', async (request, reply) => {
   return reply.type('text/html').send(`<!doctype html><html lang="pt-BR"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Switch Drive</title><body><main><h1>Conectar ao Switch Drive</h1><p>Digite o código exibido no Switch.</p><form method="post" action="/pair/${id}/authorize"><input name="code" inputmode="numeric" maxlength="6" required autofocus><button>Continuar com Google</button></form></main></body></html>`);
 });
 
-app.post('/pair/:id/authorize', {config: {rateLimit: {max: 5, timeWindow: '10 minutes'}}}, async (request, reply) => {
-  const id = (request.params as {id: string}).id;
-  const code = (request.body as {code?: string})?.code;
+async function authorizePairing(id: string, code: string | undefined, request: FastifyRequest, reply: FastifyReply) {
   if (!code) throw app.httpErrors.badRequest('Código ausente');
   const pairing = await db.query(`SELECT * FROM pairings WHERE id = $1 FOR UPDATE`, [id]);
   if (pairing.rowCount !== 1 || pairing.rows[0].expires_at < new Date()) throw app.httpErrors.gone('Pareamento expirado');
@@ -93,6 +91,16 @@ app.post('/pair/:id/authorize', {config: {rateLimit: {max: 5, timeWindow: '10 mi
   await db.query(`UPDATE pairings SET oauth_state_hash=$2, browser_nonce_hash=$3 WHERE id=$1`, [id, hash(state), hash(browserNonce)]);
   reply.setCookie('switch_drive_oauth', `${id}.${browserNonce}`, cookieOptions());
   return reply.redirect(oauth.generateAuthUrl({access_type: 'offline', prompt: 'consent', include_granted_scopes: true, scope: scopes, state}));
+}
+
+app.get('/pair/:id/scan/:code', {config: {rateLimit: {max: 5, timeWindow: '10 minutes'}}}, async (request, reply) => {
+  const {id, code} = request.params as {id: string; code: string};
+  return authorizePairing(id, code, request, reply);
+});
+
+app.post('/pair/:id/authorize', {config: {rateLimit: {max: 5, timeWindow: '10 minutes'}}}, async (request, reply) => {
+  const id = (request.params as {id: string}).id;
+  return authorizePairing(id, (request.body as {code?: string})?.code, request, reply);
 });
 
 app.get('/oauth/google/callback', async (request, reply) => {

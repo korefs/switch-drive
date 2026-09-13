@@ -28,6 +28,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("On your phone, open:", "No celular, abra:", "En tu teléfono, abre:") \
  X("Code", "Código", "Código") \
  X("A: check now   B: cancel", "A: verificar agora   B: cancelar", "A: comprobar ahora   B: cancelar") \
+ X("Scan with your phone to continue.", "Escaneie com o celular para continuar.", "Escanea con tu teléfono para continuar.") \
  X("Connected: %s", "Conectado: %s", "Conectado: %s") \
  X("Connect an account first", "Conecte uma conta primeiro", "Conecta una cuenta primero") \
  X("Remote file changed", "Arquivo remoto mudou", "El archivo remoto cambió") \

@@ -1,6 +1,7 @@
 #include "switchdrive/core.hpp"
 #include "switchdrive/i18n.hpp"
 #include "switchdrive/network.hpp"
+#include "switchdrive/qr.hpp"
 #include "switchdrive/ui_model.hpp"
 
 #include <array>
@@ -43,6 +44,14 @@ int main() {
             assert(placeholderSignature(tr(static_cast<TextId>(index))) == placeholderSignature(english[index]));
         }
     }
+    const auto pairingQr = qr::encode("https://drive.example.com/pair/123e4567-e89b-12d3-a456-426614174000/scan/123456");
+    assert(pairingQr && pairingQr->size == 37);
+    uint32_t qrHash = 2166136261U;
+    for (const bool module : pairingQr->modules) { qrHash ^= module; qrHash *= 16777619U; }
+    // This vector also verifies finder, alignment, Reed-Solomon, masking, and
+    // format information against an independently implemented QR encoder.
+    assert(qrHash == 4030055473U);
+    assert(!qr::encode(std::string(214, 'a')));
     assert(ui::hitTest({10, 10, 52, 52}, 61, 61) && !ui::hitTest({10, 10, 52, 52}, 62, 62));
     assert(ui::moveSelection(0, 4, -1) == 3 && ui::moveSelection(3, 4, 1) == 0);
     assert(ui::moveSelection(0, 4, -1, false) == 0 && ui::moveSelection(3, 4, 1, false) == 3);

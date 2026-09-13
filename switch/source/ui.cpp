@@ -1,6 +1,7 @@
 #include "switchdrive/ui.hpp"
 #include "switchdrive/ui_model.hpp"
 #include "switchdrive/i18n.hpp"
+#include "switchdrive/qr.hpp"
 
 #ifdef __SWITCH__
 #include <switch.h>
@@ -19,6 +20,7 @@ constexpr uint64_t HidNpadButton_A = 1, HidNpadButton_X = 4;
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <sys/stat.h>
 #include <unordered_map>
 
@@ -149,6 +151,7 @@ struct Ui::Impl {
     std::string appletWarning;
     uint64_t progressCurrent{};
     uint64_t progressTotal{};
+    std::optional<qr::Code> qrCode;
     std::unordered_map<std::string, TextSurface> textCache;
     uint64_t frame{};
     uint64_t inputPolls{};
@@ -345,6 +348,7 @@ void Ui::clear() {
     impl_->subtitle.clear();
     impl_->progressCurrent = 0;
     impl_->progressTotal = 0;
+    impl_->qrCode.reset();
 
 }
 void Ui::setBrand(const std::string& text) { impl_->brand = text; }
@@ -374,6 +378,7 @@ void Ui::setSubtitle(const std::string& text) { impl_->subtitle = text; }
 int Ui::takeRowSelection() { const int result = impl_->rowSelection; impl_->rowSelection = -1; return result; }
 void Ui::setAppletWarning(const std::string& text) { impl_->appletWarning = stripAnsi(text); }
 void Ui::setProgress(uint64_t current, uint64_t total) { impl_->progressCurrent = current; impl_->progressTotal = total; }
+void Ui::setQrCode(const std::string& content) { impl_->qrCode = qr::encode(content); }
 
 void Ui::write(const std::string& text) {
     auto& data = *impl_;
@@ -467,7 +472,32 @@ void Ui::present() {
     }
     std::vector<std::string> lines = data.lines;
     if (!data.current.empty()) lines.push_back(data.current);
-    if (!lines.empty()) {
+    if (data.qrCode) {
+        const int panelY = contentY;
+        roundedRect(data.screen, 292, panelY, 370, 376 - (data.applet ? 54 : 0), 20, kSurface);
+        const int modulePixels = std::max(1, std::min(8, 325 / (data.qrCode->size + 8)));
+        const int qrPixels = (data.qrCode->size + 8) * modulePixels;
+        const int qrX = 292 + (370 - qrPixels) / 2;
+        const int qrY = panelY + (376 - (data.applet ? 54 : 0) - qrPixels) / 2;
+        fillRect(data.screen, qrX, qrY, qrPixels, qrPixels, kText);
+        for (int row = 0; row < data.qrCode->size; ++row) for (int column = 0; column < data.qrCode->size; ++column) {
+            if (data.qrCode->dark(row, column)) fillRect(data.screen, qrX + (column + 4) * modulePixels, qrY + (row + 4) * modulePixels, modulePixels, modulePixels, kBackground);
+        }
+        roundedRect(data.screen, 686, panelY, 542, 376 - (data.applet ? 54 : 0), 20, kSurface);
+        SDL_Rect clip{710, panelY + 24, 494, 320 - (data.applet ? 54 : 0)};
+        SDL_SetClipRect(data.screen, &clip);
+        int y = panelY + 30;
+        for (const auto& line : lines) {
+            if (line.empty()) { y += 12; continue; }
+            const auto item = data.text(line.substr(0, 1024), 0, kText, 474);
+            if (!item.surface) continue;
+            SDL_Rect target{714, y, item.width, item.height};
+            SDL_BlitSurface(item.surface, nullptr, data.screen, &target);
+            y += item.height + 14;
+            if (y > clip.y + clip.h) break;
+        }
+        SDL_SetClipRect(data.screen, nullptr);
+    } else if (!lines.empty()) {
         // Status and confirmation screens are wrapped prose, never terminal rows.
         roundedRect(data.screen, 292, contentY, 936, 376 - (data.applet ? 54 : 0), 20, kSurface);
         SDL_Rect clip{316, contentY + 18, 884, 318 - (data.applet ? 54 : 0)};

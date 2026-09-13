@@ -47,6 +47,13 @@ int main(int argc, char** argv) {
             view.setHint(tr(TextId::BrowseHint));
             view.setRows({{"Homebrew", tr(TextId::Folder), ui::Icon::Folder}, {"Capturas de tela", tr(TextId::Folder), ui::Icon::Folder}, {"switch-drive.nro", "3.4 MiB"}, {"Um arquivo com nome muito longo para verificar os limites e a legibilidade da interface.zip", "4096.0 MiB"}, {"Notas.txt", "0.1 MiB"}, {"Fotos.zip", "350.0 MiB"}, {"Backup.zip", "1800.0 MiB"}}, 3);
             if (!save("files")) return 1;
+            view.clear();
+            view.setHeader(tr(TextId::ConnectDrive));
+            view.setSubtitle(tr(TextId::ScanWithPhone));
+            view.setQrCode("https://drive.example.com/pair/123e4567-e89b-12d3-a456-426614174000/scan/123456");
+            view.write(std::string(tr(TextId::OpenOnPhone)) + "\nhttps://drive.example.com/pair/123e4567-e89b-12d3-a456-426614174000\n\n" + tr(TextId::Code) + ": 123456\n");
+            view.setHint(tr(TextId::CheckNow));
+            if (!save("pairing")) return 1;
         }
     }
     return 0;
