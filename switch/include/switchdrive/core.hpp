@@ -17,6 +17,8 @@ enum class TaskState { Queued, Downloading, Paused, Verifying, Installing, Compl
 enum class LocalState { Present, RemovedAfterInstall, Missing, NotDownloaded };
 enum class InstallKind { None, Nro, Nsp };
 enum class StorageKind { Regular, Concatenated };
+enum class ProviderKind { GoogleDrive, HomeStorage };
+enum class ChecksumKind { None, Md5, Sha256 };
 enum class NspContentKind { Unknown, BaseGame, Update, Dlc };
 enum class NspInstallStorage { SdCard, InternalUser };
 enum class NspInstallState { None, Pending, Installing, Installed, Failed, Unverified };
@@ -25,13 +27,20 @@ enum class NspInstallDecision { Install, AlreadyInstalled, DowngradeBlocked, Uns
 constexpr uint64_t kFat32FileLimit = 4ULL * 1024ULL * 1024ULL * 1024ULL;
 
 struct Account { std::string id, email, displayName; };
-struct RemoteFile {
-    std::string id, name, mimeType, md5, revision, resourceKey, shortcutTargetId;
+struct Checksum { ChecksumKind kind{ChecksumKind::None}; std::string value; };
+struct RemoteEntry {
+    std::string id, providerId, name, mimeType, revision, etag, resourceKey, shortcutTargetId;
+    Checksum checksum;
     uint64_t size{};
-    bool folder{}, shortcut{}, canDownload{true};
+    bool folder{}, shortcut{}, canDownload{true}, canHide{};
+};
+struct ProviderConfig {
+    std::string id, name, baseUrl, accessToken, lastFolderId;
+    ProviderKind kind{ProviderKind::HomeStorage};
+    bool canManageCatalog{};
 };
 struct Task {
-    std::string id, accountId, remoteId, displayName, localPath, md5, revision, etag;
+    std::string id, providerId, accountId, remoteId, displayName, localPath, md5, sha256, revision, etag;
     uint64_t expectedSize{}, committedBytes{};
     TaskState state{TaskState::Queued};
     LocalState localState{LocalState::NotDownloaded};
@@ -41,7 +50,7 @@ struct Task {
     std::string error;
 };
 struct LibraryItem {
-    std::string id, accountId, remoteId, name, localPath, md5;
+    std::string id, providerId, accountId, remoteId, name, localPath, md5, sha256;
     uint64_t size{};
     LocalState localState{LocalState::NotDownloaded};
     InstallKind installed{InstallKind::None};
@@ -85,10 +94,11 @@ struct NspInstallJournal {
     bool deletePackage{}, ticketWasPresent{}, ticketImported{};
 };
 struct State {
-    int schemaVersion{4};
-    std::string serviceUrl, consolePublicKey, sessionToken, lastAccountId, lastFolderId, language{"en-US"};
+    int schemaVersion{5};
+    std::string serviceUrl, consolePublicKey, sessionToken, lastAccountId, lastFolderId, activeProviderId{"google-drive"}, language{"en-US"};
     bool deleteAfterInstall{true};
     std::vector<Account> accounts;
+    std::vector<ProviderConfig> providers{{"google-drive","","","","root",ProviderKind::GoogleDrive,false}};
     std::vector<Task> tasks;
     std::vector<LibraryItem> library;
 };
@@ -99,6 +109,7 @@ bool isNro(const std::string& name);
 bool isNsp(const std::string& name);
 bool isNsz(const std::string& name);
 bool isInstallablePackage(const std::string& name);
+bool normalizeHomeStorageUrl(const std::string& input, std::string& output);
 std::string makeId();
 bool fileExists(const std::string& path);
 uint64_t fileSize(const std::string& path);

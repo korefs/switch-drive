@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <climits>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <sstream>
@@ -110,6 +111,9 @@ InstallKind parseInstallKind(const std::string& value) {
     if (value == "nsp") return InstallKind::Nsp;
     return InstallKind::None;
 }
+
+const char* providerKindName(ProviderKind kind) { return kind == ProviderKind::GoogleDrive ? "google-drive" : "home-storage"; }
+ProviderKind parseProviderKind(const std::string& value) { return value == "google-drive" ? ProviderKind::GoogleDrive : ProviderKind::HomeStorage; }
 
 std::string escape(const std::string& value) {
     std::string result;
@@ -226,6 +230,47 @@ bool truncateFile(std::FILE* file, uint64_t size, std::string& error) {
 }
 
 } // namespace
+
+bool normalizeHomeStorageUrl(const std::string& input, std::string& output) {
+    const auto begin = input.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) return false;
+    const auto end = input.find_last_not_of(" \t\r\n");
+    const std::string value = input.substr(begin, end - begin + 1);
+    std::string scheme, authority;
+    if (value.rfind("http://", 0) == 0) { scheme = "http://"; authority = value.substr(7); }
+    else if (value.rfind("https://", 0) == 0) { scheme = "https://"; authority = value.substr(8); }
+    else {
+        if (value.find("://") != std::string::npos) return false;
+        authority = value;
+    }
+    if (authority.empty() || authority.size() > 500 || authority.find_first_of("/@?#\\ \t\r\n") != std::string::npos) return false;
+    const auto colon = authority.find(':');
+    if (colon != std::string::npos && authority.find(':', colon + 1) != std::string::npos) return false;
+    const std::string host = authority.substr(0, colon);
+    if (host.empty() || host.front() == '.' || host.back() == '.') return false;
+    for (const unsigned char c : host) if (!std::isalnum(c) && c != '.' && c != '-') return false;
+    if (colon != std::string::npos) {
+        const std::string port = authority.substr(colon + 1);
+        if (port.empty() || port.size() > 5 || !std::all_of(port.begin(), port.end(), [](unsigned char c){ return std::isdigit(c); })) return false;
+        const long value = std::strtol(port.c_str(), nullptr, 10); if (value < 1 || value > 65535) return false;
+    }
+    unsigned octets[4]{}; size_t offset = 0; bool ipv4 = true;
+    for (size_t i = 0; i < 4; ++i) {
+        const auto dot = host.find('.', offset); const auto stop = i == 3 ? host.size() : dot;
+        if (stop == std::string::npos || stop == offset || (i == 3 && dot != std::string::npos)) { ipv4 = false; break; }
+        const std::string part = host.substr(offset, stop - offset);
+        if (!std::all_of(part.begin(), part.end(), [](unsigned char c){ return std::isdigit(c); })) { ipv4 = false; break; }
+        const long n = std::strtol(part.c_str(), nullptr, 10); if (n > 255) { ipv4 = false; break; } octets[i] = static_cast<unsigned>(n); offset = stop + 1;
+    }
+    const bool numericHost = std::all_of(host.begin(), host.end(), [](unsigned char c){ return std::isdigit(c) || c == '.'; });
+    if (numericHost && !ipv4) return false;
+    if (scheme.empty()) {
+        const bool privateIp = ipv4 && (octets[0] == 10 || octets[0] == 127 || (octets[0] == 192 && octets[1] == 168) || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) || (octets[0] == 169 && octets[1] == 254));
+        const bool localName = host == "localhost" || host.ends_with(".local"); scheme = privateIp || localName ? "http://" : "https://";
+    }
+    output = scheme + authority;
+    return true;
+}
 
 std::string sanitizeFileName(const std::string& name) {
     std::string out;
@@ -617,14 +662,16 @@ State StateStore::load() {
     if (!input.good()) return state;
     const std::string json((std::istreambuf_iterator<char>(input)), {});
     const int schemaVersion = static_cast<int>(numberField(json, "schemaVersion"));
-    if (schemaVersion != 1 && schemaVersion != 2 && schemaVersion != 3 && schemaVersion != 4) return state;
+    if (schemaVersion < 1 || schemaVersion > 5) return state;
 
-    state.schemaVersion = 4;
+    state.schemaVersion = 5;
     state.serviceUrl = stringField(json, "serviceUrl");
     state.consolePublicKey = stringField(json, "consolePublicKey");
     state.sessionToken = stringField(json, "sessionToken");
     state.lastAccountId = stringField(json, "lastAccountId");
     state.lastFolderId = stringField(json, "lastFolderId");
+    state.activeProviderId = schemaVersion >= 5 ? stringField(json, "activeProviderId") : "google-drive";
+    if (state.activeProviderId.empty()) state.activeProviderId = "google-drive";
     state.language = std::string(i18n::languageCode(i18n::parseLanguage(stringField(json, "language"))));
     state.deleteAfterInstall = boolField(json, "deleteAfterInstall", true);
 
@@ -632,14 +679,28 @@ State StateStore::load() {
         Account account{stringField(row, "id"), stringField(row, "email"), stringField(row, "displayName")};
         if (!account.id.empty()) state.accounts.push_back(std::move(account));
     }
+    if (schemaVersion >= 5) {
+        state.providers.clear();
+        for (const auto& row : objectRows(json, "providers")) {
+            ProviderConfig provider;
+            provider.id = stringField(row, "id"); provider.kind = parseProviderKind(stringField(row, "kind"));
+            provider.name = stringField(row, "name"); provider.baseUrl = stringField(row, "baseUrl");
+            provider.accessToken = stringField(row, "accessToken"); provider.lastFolderId = stringField(row, "lastFolderId");
+            provider.canManageCatalog = boolField(row, "canManageCatalog", false);
+            if (!provider.id.empty()) state.providers.push_back(std::move(provider));
+        }
+        if (std::none_of(state.providers.begin(), state.providers.end(), [](const ProviderConfig& p){ return p.kind == ProviderKind::GoogleDrive; })) state.providers.insert(state.providers.begin(),{"google-drive","","","","root",ProviderKind::GoogleDrive,false});
+    }
     for (const auto& row : objectRows(json, "library")) {
         LibraryItem item;
         item.id = stringField(row, "id");
+        item.providerId = schemaVersion >= 5 ? stringField(row, "providerId") : "google-drive";
         item.accountId = stringField(row, "accountId");
         item.remoteId = stringField(row, "remoteId");
         item.name = stringField(row, "name");
         item.localPath = stringField(row, "localPath");
         item.md5 = stringField(row, "md5");
+        item.sha256 = stringField(row, "sha256");
         item.size = numberField(row, "size");
         item.localState = parseLocalState(stringField(row, "localState"));
         item.installed = parseInstallKind(stringField(row, "installed"));
@@ -663,11 +724,13 @@ State StateStore::load() {
         for (const auto& row : objectRows(json, "tasks")) {
             Task task;
             task.id = stringField(row, "id");
+            task.providerId = schemaVersion >= 5 ? stringField(row, "providerId") : "google-drive";
             task.accountId = stringField(row, "accountId");
             task.remoteId = stringField(row, "remoteId");
             task.displayName = stringField(row, "displayName");
             task.localPath = stringField(row, "localPath");
             task.md5 = stringField(row, "md5");
+            task.sha256 = stringField(row, "sha256");
             task.revision = stringField(row, "revision");
             task.etag = stringField(row, "etag");
             task.expectedSize = numberField(row, "expectedSize");
@@ -701,11 +764,12 @@ bool StateStore::save(const State& state, std::string& error) {
         return false;
     }
     const std::string language(i18n::languageCode(i18n::parseLanguage(state.language)));
-    output << "{\"schemaVersion\":4,\"serviceUrl\":\"" << escape(state.serviceUrl)
+    output << "{\"schemaVersion\":5,\"serviceUrl\":\"" << escape(state.serviceUrl)
            << "\",\"consolePublicKey\":\"" << escape(state.consolePublicKey)
            << "\",\"sessionToken\":\"" << escape(state.sessionToken)
            << "\",\"lastAccountId\":\"" << escape(state.lastAccountId)
            << "\",\"lastFolderId\":\"" << escape(state.lastFolderId)
+           << "\",\"activeProviderId\":\"" << escape(state.activeProviderId)
            << "\",\"language\":\"" << language
            << "\",\"deleteAfterInstall\":" << (state.deleteAfterInstall ? "true" : "false") << ",\"accounts\":[";
     for (size_t i = 0; i < state.accounts.size(); ++i) {
@@ -714,13 +778,21 @@ bool StateStore::save(const State& state, std::string& error) {
         output << "{\"id\":\"" << escape(account.id) << "\",\"email\":\"" << escape(account.email)
                << "\",\"displayName\":\"" << escape(account.displayName) << "\"}";
     }
+    output << "],\"providers\":[";
+    for (size_t i = 0; i < state.providers.size(); ++i) {
+        const auto& provider = state.providers[i]; if (i) output << ',';
+        output << "{\"id\":\"" << escape(provider.id) << "\",\"kind\":\"" << providerKindName(provider.kind)
+               << "\",\"name\":\"" << escape(provider.name) << "\",\"baseUrl\":\"" << escape(provider.baseUrl)
+               << "\",\"accessToken\":\"" << escape(provider.accessToken) << "\",\"lastFolderId\":\"" << escape(provider.lastFolderId)
+               << "\",\"canManageCatalog\":" << (provider.canManageCatalog ? "true" : "false") << "}";
+    }
     output << "],\"tasks\":[";
     for (size_t i = 0; i < state.tasks.size(); ++i) {
         const auto& task = state.tasks[i];
         if (i) output << ',';
-        output << "{\"id\":\"" << escape(task.id) << "\",\"accountId\":\"" << escape(task.accountId)
+        output << "{\"id\":\"" << escape(task.id) << "\",\"providerId\":\"" << escape(task.providerId) << "\",\"accountId\":\"" << escape(task.accountId)
                << "\",\"remoteId\":\"" << escape(task.remoteId) << "\",\"displayName\":\"" << escape(task.displayName)
-               << "\",\"localPath\":\"" << escape(task.localPath) << "\",\"md5\":\"" << escape(task.md5)
+               << "\",\"localPath\":\"" << escape(task.localPath) << "\",\"md5\":\"" << escape(task.md5) << "\",\"sha256\":\"" << escape(task.sha256)
                << "\",\"revision\":\"" << escape(task.revision) << "\",\"etag\":\"" << escape(task.etag)
                << "\",\"expectedSize\":" << task.expectedSize << ",\"committedBytes\":" << task.committedBytes
                << ",\"state\":\"" << taskStateName(task.state) << "\",\"localState\":\"" << localStateName(task.localState)
@@ -733,9 +805,9 @@ bool StateStore::save(const State& state, std::string& error) {
     for (size_t i = 0; i < state.library.size(); ++i) {
         const auto& item = state.library[i];
         if (i) output << ',';
-        output << "{\"id\":\"" << escape(item.id) << "\",\"accountId\":\"" << escape(item.accountId)
+        output << "{\"id\":\"" << escape(item.id) << "\",\"providerId\":\"" << escape(item.providerId) << "\",\"accountId\":\"" << escape(item.accountId)
                << "\",\"remoteId\":\"" << escape(item.remoteId) << "\",\"name\":\"" << escape(item.name)
-               << "\",\"localPath\":\"" << escape(item.localPath) << "\",\"md5\":\"" << escape(item.md5)
+               << "\",\"localPath\":\"" << escape(item.localPath) << "\",\"md5\":\"" << escape(item.md5) << "\",\"sha256\":\"" << escape(item.sha256)
                << "\",\"size\":" << item.size << ",\"localState\":\"" << localStateName(item.localState)
                << "\",\"installed\":\"" << installKindName(item.installed) << "\",\"storageKind\":\"" << storageKindName(item.storageKind)
                << "\",\"installedPath\":\"" << escape(item.installedPath) << "\",\"installedContentId\":\"" << escape(item.installedContentId)

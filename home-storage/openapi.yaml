@@ -1,0 +1,41 @@
+openapi: 3.1.0
+info: {title: Switch Drive Home Storage API, version: 1.0.0}
+paths:
+  /health:
+    get: {summary: Container health, responses: {'200': {description: Healthy or degraded}}}
+  /drive-health:
+    get: {summary: Discovery metadata, responses: {'200': {description: Home Storage identity}}}
+  /api/v1/auth/token:
+    post:
+      summary: Exchange library Basic credentials for a revocable bearer token
+      security: [{basicAuth: []}]
+      responses: {'200': {description: Token issued}, '401': {description: Invalid credentials}, '429': {description: Rate limited}}
+  /api/v1/catalog:
+    get:
+      summary: List children of an opaque folder ID
+      security: [{bearerAuth: []}, {}]
+      parameters:
+        - {in: query, name: parentId, schema: {type: string, default: root}}
+        - {in: query, name: cursor, schema: {type: string}}
+        - {in: query, name: limit, schema: {type: integer, minimum: 1, maximum: 200}}
+      responses: {'200': {description: Catalog page}, '401': {description: Authentication required}}
+  /api/v1/files/{fileId}/content:
+    parameters: [{in: path, name: fileId, required: true, schema: {type: string}}]
+    get:
+      summary: Stream a file with byte-range and If-Range support
+      security: [{bearerAuth: []}, {}]
+      responses: {'200': {description: Full file}, '206': {description: Partial content}, '404': {description: Unavailable ID}, '409': {description: File changed}, '416': {description: Unsatisfiable range}, '429': {description: Concurrency limit}}
+    head:
+      summary: Return metadata without a response body
+      security: [{bearerAuth: []}, {}]
+      responses: {'200': {description: Metadata headers}}
+  /api/v1/catalog/{id}:
+    delete:
+      summary: Suppress an entry without deleting the host file
+      security: [{bearerAuth: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'204': {description: Suppressed}, '403': {description: Missing scope}}
+components:
+  securitySchemes:
+    basicAuth: {type: http, scheme: basic}
+    bearerAuth: {type: http, scheme: bearer}

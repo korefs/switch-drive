@@ -439,7 +439,7 @@ void Ui::present() {
         data.drawText(card.detail, x + 24, y + 120, 0, kMuted);
         SDL_SetClipRect(data.screen, nullptr);
         if (focused || card.action != HidNpadButton_A) {
-            const auto button = i18n::tr(focused ? i18n::TextId::ButtonA : card.action == HidNpadButton_X ? i18n::TextId::ButtonX : i18n::TextId::ButtonY);
+            const auto button = i18n::tr(focused ? i18n::TextId::ButtonA : card.action == HidNpadButton_X ? i18n::TextId::ButtonX : card.action == HidNpadButton_ZL ? i18n::TextId::ButtonZL : i18n::TextId::ButtonY);
             roundedRect(data.screen, x + 392, y + 22, 40, 40, 20, kSelected);
             data.drawText(button, x + 404, y + 28, 0, kAccent);
         }
@@ -609,7 +609,7 @@ void Ui::scanInput() {
                 if (data.pressed & HidNpadButton_A) {
                     const int selected = data.focus.activate(data.cards.size());
                     if (selected >= 0) data.cardAction = data.cards[static_cast<size_t>(selected)].action;
-                } else if (data.pressed & (HidNpadButton_X | HidNpadButton_Y)) {
+                } else if (data.pressed & (HidNpadButton_X | HidNpadButton_Y | HidNpadButton_ZL)) {
                     for (size_t index = 0; index < data.cards.size(); ++index) {
                         if (data.cards[index].action & data.pressed) {
                             data.focus = {index, false};
