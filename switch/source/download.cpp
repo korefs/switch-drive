@@ -27,6 +27,10 @@ bool parseUnsigned(const std::string& value, uint64_t& out) {
 
 } // namespace
 
+bool continueHttpActivity(const ActivityCallback* activity) {
+    return !activity || !*activity || (*activity)();
+}
+
 TransferMeter::TransferMeter(uint64_t initialBytes, Clock::time_point startedAt) : sampledBytes_(initialBytes), sampledAt_(startedAt) {}
 
 TransferEstimate TransferMeter::sample(uint64_t received, uint64_t total, Clock::time_point now) {

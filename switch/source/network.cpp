@@ -47,7 +47,7 @@ struct DownloadContext {
 
 int pump(void* user, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
     const auto* activity = static_cast<const ActivityCallback*>(user);
-    return activity && *activity && !(*activity) ? 1 : 0;
+    return continueHttpActivity(activity) ? 0 : 1;
 }
 
 size_t writeDownload(void* contents, size_t size, size_t count, void* pointer) {

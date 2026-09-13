@@ -122,7 +122,180 @@ std::vector<uint8_t> makePfs(const std::vector<std::pair<std::string, std::vecto
     return pfs;
 }
 
+class FakeCnmtReader final : public CnmtFileReader {
+  public:
+    std::vector<std::string> names{"manifest.xml", "Application_0100000000000000.cnmt"};
+    std::vector<uint8_t> contents = std::vector<uint8_t>(64, 0xab);
+    int64_t reportedSize{64};
+    uint32_t failure{0x202};
+    int failAt{};
+    bool shortRead{}, didRead{};
+    std::string openedPath;
+    size_t next{};
+    uint32_t openDirectory() override { return failAt == 1 ? failure : 0; }
+    uint32_t nextFile(std::string& name, bool& end) override {
+        if (failAt == 2) return failure;
+        end = next == names.size();
+        if (!end) name = names[next++];
+        return 0;
+    }
+    uint32_t openFile(const std::string& path) override {
+        openedPath = path;
+        // Reproduce the FS requirement that the previous code violated.
+        if (path.empty() || path.front() != '/') return 0x2ee602;
+        return failAt == 3 ? failure : 0;
+    }
+    uint32_t fileSize(int64_t& size) override {
+        size = reportedSize;
+        return failAt == 4 ? failure : 0;
+    }
+    uint32_t readFile(void* data, size_t size, uint64_t& bytesRead) override {
+        didRead = true;
+        if (failAt == 5) return failure;
+        bytesRead = std::min(size, contents.size()) - (shortRead ? 1 : 0);
+        std::memcpy(data, contents.data(), static_cast<size_t>(bytesRead));
+        return 0;
+    }
+};
+
+void testCnmtFileReading() {
+    std::vector<uint8_t> bytes;
+    std::string error;
+    FakeCnmtReader valid;
+    assert(readCnmtFile(valid, bytes, error));
+    assert(valid.openedPath == "/Application_0100000000000000.cnmt");
+    assert(bytes == valid.contents && error.empty());
+
+    for (auto language : {Language::EnUs, Language::PtBr, Language::EsEs}) {
+        setLanguage(language);
+        const std::array stages{TextId::CnmtDirectoryReadFailed, TextId::CnmtDirectoryReadFailed,
+            TextId::CnmtFileOpenFailed, TextId::CnmtSizeReadFailed, TextId::CnmtDataReadFailed};
+        for (int stage = 1; stage <= 5; ++stage) {
+            FakeCnmtReader failing;
+            failing.failAt = stage;
+            error.clear(); bytes = {0xff};
+            assert(!readCnmtFile(failing, bytes, error));
+            std::array<char, 256> expected{};
+            std::snprintf(expected.data(), expected.size(), tr(stages[stage - 1]), failing.failure);
+            assert(error == expected.data() && error.find("0x00000202") != std::string::npos);
+            assert(bytes.empty());
+        }
+        for (const int64_t size : {-1LL, 0LL, 31LL, 16LL * 1024 * 1024 + 1}) {
+            FakeCnmtReader invalid;
+            invalid.reportedSize = size;
+            assert(!readCnmtFile(invalid, bytes, error));
+            assert(error == tr(TextId::CnmtInvalidSize) && !invalid.didRead && bytes.empty());
+        }
+        FakeCnmtReader truncated;
+        truncated.shortRead = true;
+        assert(!readCnmtFile(truncated, bytes, error));
+        assert(error == tr(TextId::CnmtTruncated) && bytes.empty());
+        FakeCnmtReader missing;
+        missing.names = {"readme.txt", "nested/file.cnmt", "../other.cnmt"};
+        assert(!readCnmtFile(missing, bytes, error));
+        assert(error == tr(TextId::CnmtFileMissing) && missing.openedPath.empty());
+        assert(std::strlen(tr(TextId::InstallFailureUnknown)) > 0);
+    }
+    setLanguage(Language::EnUs);
+}
+
+void testHttpActivity() {
+    assert(continueHttpActivity(nullptr));
+    ActivityCallback empty;
+    assert(continueHttpActivity(&empty));
+    int updates = 0;
+    bool keepRunning = true;
+    ActivityCallback activity = [&] { ++updates; return keepRunning; };
+    for (int index = 0; index < 3; ++index) assert(continueHttpActivity(&activity));
+    assert(updates == 3); // A nonempty std::function must be invoked, not just tested.
+    keepRunning = false;
+    assert(!continueHttpActivity(&activity) && updates == 4);
+}
+
+void testDownloadRemoval(const fs::path& root) {
+    std::string error;
+    for (const auto kind : {StorageKind::Regular, StorageKind::Concatenated}) {
+        for (const bool installed : {false, true}) {
+            StateStore store(root / makeId());
+            State state;
+            Task task;
+            task.id = "download";
+            task.displayName = "game.nsz";
+            task.localPath = store.downloadPath(task).string();
+            task.storageKind = kind;
+            task.state = TaskState::Completed;
+            state.tasks.push_back(task);
+            Task unrelated;
+            unrelated.id = "unrelated";
+            state.tasks.push_back(unrelated);
+            LibraryItem item;
+            item.id = task.id;
+            item.name = task.displayName;
+            item.localPath = task.localPath;
+            item.storageKind = kind;
+            item.localState = LocalState::Present;
+            if (installed) {
+                item.installed = InstallKind::Nsp;
+                item.nspInstallState = NspInstallState::Installed;
+                item.nspMetaId = "0100000000001000";
+                item.nspVersion = 42;
+                item.installedContentId = "content";
+            }
+            state.library.push_back(item);
+            LocalFile file;
+            assert(file.create(task.localPath, kind, error, 8));
+            assert(file.writeAt(0, "abcdefghijklmnop", 16, error));
+            file.close();
+            assert(store.save(state, error));
+            assert(store.removeDownload(state, state.library[0].id, error));
+            assert(!LocalFile::exists(task.localPath, kind));
+            const State loaded = store.load();
+            assert(loaded.tasks.size() == 1 && loaded.tasks[0].id == "unrelated");
+            assert(loaded.library.size() == (installed ? 1U : 0U));
+            if (installed) {
+                assert(loaded.library[0].localState == LocalState::Missing);
+                assert(loaded.library[0].installed == InstallKind::Nsp);
+                assert(loaded.library[0].nspInstallState == NspInstallState::Installed);
+                assert(loaded.library[0].nspMetaId == item.nspMetaId && loaded.library[0].nspVersion == 42);
+                assert(loaded.library[0].installedContentId == "content");
+            }
+            // Already missing files can still have their stale download records removed.
+            state.library = {item};
+            state.library[0].installed = InstallKind::None;
+            state.library[0].nspInstallState = NspInstallState::None;
+            assert(store.removeDownload(state, state.library[0].id, error));
+            assert(state.library.empty());
+            state.library = {item};
+            state.library[0].installed = InstallKind::None;
+            state.library[0].nspInstallState = NspInstallState::Failed;
+            assert(store.removeDownload(state, state.library[0].id, error));
+            assert(state.library.empty());
+
+            // Wrong targets and filesystem errors must leave records intact.
+            state.library = {item};
+            state.library[0].localPath = root.string();
+            assert(!store.removeDownload(state, item.id, error));
+            assert(error == tr(TextId::DownloadRemovalUnsafePath) && state.library.size() == 1 && fs::exists(root));
+            state.library = {item};
+            state.library[0].storageKind = StorageKind::Regular;
+            fs::create_directories(fs::path(item.localPath) / "not-a-file");
+            assert(!store.removeDownload(state, item.id, error));
+            assert(state.library.size() == 1 && fs::is_directory(item.localPath));
+
+            NspInstallJournal journal;
+            journal.operation = "install";
+            journal.libraryId = item.id;
+            journal.package.metaId = "0100000000001000";
+            assert(store.saveInstallJournal(journal, error));
+            assert(!store.removeDownload(state, item.id, error));
+            assert(error == tr(TextId::DownloadRemovalPending) && state.library.size() == 1);
+        }
+    }
+}
+
 int main() {
+    testHttpActivity();
+    testCnmtFileReading();
     const auto placeholderSignature = [](const std::string& value) {
         std::string output;
         for (size_t index = 0; index < value.size(); ++index) {
@@ -259,6 +432,7 @@ int main() {
 
     const fs::path root = fs::temp_directory_path() / ("switch-drive-test-" + makeId());
     fs::create_directories(root);
+    testDownloadRemoval(root / "removal");
     std::string error;
 
     const auto regularPath = root / "sequential.bin";

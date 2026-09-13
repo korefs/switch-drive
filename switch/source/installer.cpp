@@ -107,12 +107,61 @@ const Pfs0Entry* findContentEntry(const Pfs0& pfs0, const std::string& id, bool 
     }
     return nullptr;
 }
-#ifdef __SWITCH__
-std::string resultError(i18n::TextId text, Result result) {
+std::string resultError(i18n::TextId text, uint32_t result) {
     std::array<char, 192> message{};
     std::snprintf(message.data(), message.size(), i18n::tr(text), static_cast<unsigned>(result));
     return message.data();
 }
+#ifdef __SWITCH__
+class SwitchCnmtReader final : public CnmtFileReader {
+  public:
+    explicit SwitchCnmtReader(FsFileSystem& filesystem) : filesystem_(filesystem) {}
+    ~SwitchCnmtReader() override {
+        if (fileOpen_) fsFileClose(&file_);
+        if (directoryOpen_) fsDirClose(&directory_);
+    }
+    uint32_t openDirectory() override {
+        const Result rc = fsFsOpenDirectory(&filesystem_, "/", FsDirOpenMode_ReadFiles, &directory_);
+        directoryOpen_ = R_SUCCEEDED(rc);
+        return rc;
+    }
+    uint32_t nextFile(std::string& name, bool& end) override {
+        FsDirectoryEntry entry{}; s64 count{};
+        const Result rc = fsDirRead(&directory_, &count, 1, &entry);
+        if (R_FAILED(rc)) return rc;
+        if (count < 0 || count > 1) return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+        end = count == 0;
+        if (!end) {
+            const size_t length = strnlen(entry.name, sizeof(entry.name));
+            if (length == sizeof(entry.name)) return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+            name.assign(entry.name, length);
+        }
+        return 0;
+    }
+    uint32_t openFile(const std::string& path) override {
+        const Result rc = fsFsOpenFile(&filesystem_, path.c_str(), FsOpenMode_Read, &file_);
+        fileOpen_ = R_SUCCEEDED(rc);
+        return rc;
+    }
+    uint32_t fileSize(int64_t& size) override {
+        s64 value{};
+        const Result rc = fsFileGetSize(&file_, &value);
+        size = value;
+        return rc;
+    }
+    uint32_t readFile(void* data, size_t size, uint64_t& bytesRead) override {
+        u64 count{};
+        const Result rc = fsFileRead(&file_, 0, data, size, FsReadOption_None, &count);
+        bytesRead = count;
+        return rc;
+    }
+  private:
+    FsFileSystem& filesystem_;
+    FsDir directory_{};
+    FsFile file_{};
+    bool directoryOpen_{}, fileOpen_{};
+};
+
 bool fsPathNotFound(Result result) { return R_MODULE(result) == 2 && R_DESCRIPTION(result) == 1; }
 bool fsPathAlreadyExists(Result result) { return R_MODULE(result) == 2 && R_DESCRIPTION(result) == 2; }
 
@@ -213,6 +262,38 @@ bool importPackageTicket(const Pfs0& pfs0, NspInstallJournal& journal, std::stri
     return true;
 }
 #endif
+}
+
+bool readCnmtFile(CnmtFileReader& reader, std::vector<uint8_t>& bytes, std::string& error) {
+    bytes.clear();
+    error.clear();
+    const auto checked = [&](uint32_t result, i18n::TextId stage) {
+        if (!result) return true;
+        error = resultError(stage, result);
+        return false;
+    };
+    if (!checked(reader.openDirectory(), i18n::TextId::CnmtDirectoryReadFailed)) return false;
+    std::string cnmtName;
+    for (size_t i = 0; i < 4096; ++i) {
+        std::string name; bool end{};
+        if (!checked(reader.nextFile(name, end), i18n::TextId::CnmtDirectoryReadFailed)) return false;
+        if (end) break;
+        if (name.ends_with(".cnmt") && name.find_first_of("/\\:") == std::string::npos && name.find('\0') == std::string::npos) {
+            cnmtName = name;
+            break;
+        }
+    }
+    if (cnmtName.empty()) { error = i18n::tr(i18n::TextId::CnmtFileMissing); return false; }
+    // FsDirectoryEntry gives a basename; FS IPC requires a root-relative path.
+    if (!checked(reader.openFile("/" + cnmtName), i18n::TextId::CnmtFileOpenFailed)) return false;
+    int64_t size{};
+    if (!checked(reader.fileSize(size), i18n::TextId::CnmtSizeReadFailed)) return false;
+    if (size < 0x20 || size > 16 * 1024 * 1024) { error = i18n::tr(i18n::TextId::CnmtInvalidSize); return false; }
+    bytes.resize(static_cast<size_t>(size));
+    uint64_t bytesRead{};
+    if (!checked(reader.readFile(bytes.data(), bytes.size(), bytesRead), i18n::TextId::CnmtDataReadFailed)) { bytes.clear(); return false; }
+    if (bytesRead != bytes.size()) { bytes.clear(); error = i18n::tr(i18n::TextId::CnmtTruncated); return false; }
+    return true;
 }
 
 bool NspInstaller::parseCnmt(const void* raw, size_t size, NspPackageInfo& out, std::string& error) const {
@@ -319,16 +400,14 @@ bool NspInstaller::inspect(const fs::path& source, StorageKind kind, NspPackageI
         error = resultError(i18n::TextId::CnmtOpenFailed, rc);
         return false;
     }
-    FsDir dir{}; rc = fsFsOpenDirectory(&cnmtFs, "/", FsDirOpenMode_ReadFiles, &dir);
-    FsDirectoryEntry entry{}; s64 count{}; std::string cnmtName;
-    if (R_SUCCEEDED(rc)) { fsDirRead(&dir, &count, 1, &entry); fsDirClose(&dir); if (count == 1) cnmtName = entry.name; }
-    if (cnmtName.empty()) { fsFsClose(&cnmtFs); cleanupTemporary(); error = i18n::tr(i18n::TextId::CnmtFileMissing); return false; }
-    FsFile file{}; s64 cnmtSize{}; rc = fsFsOpenFile(&cnmtFs, cnmtName.c_str(), FsOpenMode_Read, &file);
-    if (R_SUCCEEDED(rc)) rc = fsFileGetSize(&file, &cnmtSize);
-    std::vector<uint8_t> bytes(cnmtSize > 0 ? static_cast<size_t>(cnmtSize) : 0);
-    if (R_SUCCEEDED(rc) && !bytes.empty()) rc = fsFileRead(&file, 0, bytes.data(), bytes.size(), FsReadOption_None, nullptr);
-    fsFileClose(&file); fsFsClose(&cnmtFs); cleanupTemporary();
-    if (R_FAILED(rc) || !parseCnmt(bytes.data(), bytes.size(), info, error)) return false;
+    std::vector<uint8_t> bytes;
+    bool read{};
+    {
+        SwitchCnmtReader reader(cnmtFs);
+        read = readCnmtFile(reader, bytes, error);
+    }
+    fsFsClose(&cnmtFs); cleanupTemporary();
+    if (!read || !parseCnmt(bytes.data(), bytes.size(), info, error)) return false;
     info.keyGeneration = keyGeneration;
     info.metaNcaId = meta->name.substr(0, meta->name.size() - metaSuffixSize);
     info.hasTicket = std::any_of(pfs0.entries().begin(), pfs0.entries().end(), [](const Pfs0Entry& entry) { return extensionOf(entry.name) == ".tik"; });

@@ -850,6 +850,34 @@ fs::path StateStore::downloadPath(const Task& task) const {
     return root_ / "downloads" / task.id / sanitizeFileName(task.displayName);
 }
 
+bool StateStore::removeDownload(State& state, const std::string& libraryId, std::string& error) {
+    // Copy the id: callers may pass the id of an item that will be erased.
+    const std::string id = libraryId;
+    const auto item = std::find_if(state.library.begin(), state.library.end(), [&](const LibraryItem& value) { return value.id == id; });
+    if (item == state.library.end()) { error = i18n::tr(i18n::TextId::DownloadRecordMissing); return false; }
+    NspInstallJournal journal;
+    bool pending{};
+    if (!loadInstallJournal(journal, error, pending)) return false;
+    if (pending && journal.libraryId == id) { error = i18n::tr(i18n::TextId::DownloadRemovalPending); return false; }
+    if (!item->localPath.empty()) {
+        Task target;
+        target.id = id;
+        target.displayName = item->name;
+        // Never let a stale/corrupt record delete installed content or a directory above its download.
+        if (id.empty() || id == "." || id == ".." || fs::path(id).filename() != fs::path(id) ||
+            sanitizeFileName(item->name).empty() || sanitizeFileName(item->name) == "." || sanitizeFileName(item->name) == ".." ||
+            fs::path(item->localPath).lexically_normal() != downloadPath(target).lexically_normal()) {
+            error = i18n::tr(i18n::TextId::DownloadRemovalUnsafePath);
+            return false;
+        }
+        if (!LocalFile::remove(item->localPath, item->storageKind, error)) return false;
+    }
+    std::erase_if(state.tasks, [&](const Task& task) { return task.id == id; });
+    if (item->installed == InstallKind::None && (item->nspInstallState == NspInstallState::None || item->nspInstallState == NspInstallState::Failed)) state.library.erase(item);
+    else item->localState = LocalState::Missing; // Retain installation ownership and metadata.
+    return save(state, error);
+}
+
 #pragma pack(push, 1)
 struct Pfs0Header { char magic[4]; uint32_t fileCount, stringTableSize, reserved; };
 struct Pfs0RawEntry { uint64_t offset, size; uint32_t stringOffset, reserved; };

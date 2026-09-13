@@ -74,7 +74,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("local file", "arquivo local", "archivo local") \
  X("removed after install", "removido após instalar", "eliminado tras instalar") \
  X("managed NSP installed", "NSP gerenciado instalado", "NSP administrado instalado") \
- X("A: install/check  Y: remove managed NSP  B: back", "A: instalar/verificar  Y: remover NSP gerenciado  B: voltar", "A: instalar/comprobar  Y: eliminar NSP administrado  B: volver") \
+ X("A: install/check  Y: remove  B: back", "A: instalar/verificar  Y: remover  B: voltar", "A: instalar/comprobar  Y: eliminar  B: volver") \
  X("File missing", "Arquivo ausente", "Archivo ausente") \
  X("This file was not found. Remove the shortcut?  X: remove", "Este arquivo não foi encontrado. Deseja excluir o atalho?  X: excluir", "No se encontró este archivo. ¿Eliminar el acceso directo?  X: eliminar") \
  X("Remove shortcut", "Excluir atalho", "Eliminar acceso directo") \
@@ -116,9 +116,15 @@ using Catalog = std::array<const char*, textCount()>;
  X("Reading encrypted CNMT requires a Nintendo Switch with Atmosphère", "A leitura do CNMT criptografado exige um Nintendo Switch com Atmosphère", "Leer CNMT cifrado requiere una Nintendo Switch con Atmosphère") \
  X("Could not prepare the temporary CNMT directory on microSD (Result 0x%08X)", "não foi possível preparar a pasta temporária do CNMT no microSD (Result 0x%08X)", "no se pudo preparar la carpeta temporal del CNMT en microSD (Result 0x%08X)") \
  X("Could not prepare CNMT (Result 0x%08X)", "não foi possível preparar o CNMT (Result 0x%08X)", "no se pudo preparar el CNMT (Result 0x%08X)") \
- X("Could not open CNMT; check Atmosphère and patches (Result 0x%08X)", "não foi possível abrir o CNMT; verifique Atmosphère e patches (Result 0x%08X)", "no se pudo abrir el CNMT; comprueba Atmosphère y parches (Result 0x%08X)") \
+ X("Could not mount the CNMT NCA (Result 0x%08X)", "não foi possível montar o NCA do CNMT (Result 0x%08X)", "no se pudo montar el NCA del CNMT (Result 0x%08X)") \
  X("CNMT file missing", "arquivo CNMT ausente", "falta el archivo CNMT") \
  X("Invalid NSP/NSZ: content missing or wrong size", "NSP/NSZ inválido: conteúdo ausente ou com tamanho incorreto", "NSP/NSZ inválido: falta contenido o tiene tamaño incorrecto") \
+ X("Could not list CNMT files (Result 0x%08X)", "não foi possível listar os arquivos CNMT (Result 0x%08X)", "no se pudieron listar los archivos CNMT (Result 0x%08X)") \
+ X("Could not open the CNMT file (Result 0x%08X)", "não foi possível abrir o arquivo CNMT (Result 0x%08X)", "no se pudo abrir el archivo CNMT (Result 0x%08X)") \
+ X("Could not query CNMT size (Result 0x%08X)", "não foi possível consultar o tamanho do CNMT (Result 0x%08X)", "no se pudo consultar el tamaño del CNMT (Result 0x%08X)") \
+ X("Could not read the CNMT file (Result 0x%08X)", "não foi possível ler o arquivo CNMT (Result 0x%08X)", "no se pudo leer el archivo CNMT (Result 0x%08X)") \
+ X("Invalid CNMT size (expected 32 bytes to 16 MiB)", "tamanho do CNMT inválido (esperado: 32 bytes a 16 MiB)", "tamaño del CNMT inválido (esperado: 32 bytes a 16 MiB)") \
+ X("The installer returned a failure without details", "o instalador retornou uma falha sem detalhes", "el instalador devolvió un fallo sin detalles") \
  X("NSP query requires a Nintendo Switch with Atmosphère", "Consulta NSP exige um Nintendo Switch com Atmosphère", "La consulta NSP requiere una Nintendo Switch con Atmosphère") \
  X("NCM unavailable; run under Atmosphère in application mode", "NCM indisponível; execute pelo Atmosphère em modo aplicação", "NCM no disponible; ejecuta Atmosphère en modo aplicación") \
  X("NS unavailable; run under Atmosphère in application mode", "NS indisponível; execute pelo Atmosphère em modo aplicação", "NS no disponible; ejecuta Atmosphère en modo aplicación") \
@@ -232,7 +238,15 @@ using Catalog = std::array<const char*, textCount()>;
  X("Controller ready", "Controle conectado", "Control conectado") \
  X("Connect a controller", "Conecte um controle", "Conecta un control") \
  X("Waiting for input focus", "Aguardando foco de controle", "Esperando el foco de control") \
- X("Version 0.2.5", "Versão 0.2.5", "Versión 0.2.5")
+ X("Version 0.2.5", "Versão 0.2.5", "Versión 0.2.5") \
+ X("Preparing download…", "Preparando download…", "Preparando descarga…") \
+ X("Verifying downloaded file…", "Verificando arquivo baixado…", "Verificando archivo descargado…") \
+ X("B: pause download", "B: pausar download", "B: pausar descarga") \
+ X("Delete download", "Excluir download", "Eliminar descarga") \
+ X("Delete the downloaded file from microSD? Installed games and saves will not be removed.", "Excluir o arquivo baixado do microSD? Jogos instalados e saves não serão removidos.", "¿Eliminar el archivo descargado de la microSD? No se eliminarán juegos instalados ni partidas.") \
+ X("A: install  Y: delete file  X: uninstall  B: back", "A: instalar  Y: excluir arquivo  X: desinstalar  B: voltar", "A: instalar  Y: borrar archivo  X: desinstalar  B: volver") \
+ X("Installation recovery is pending. Reopen the app before deleting this download.", "Há uma recuperação de instalação pendente. Reabra o app antes de excluir este download.", "Hay una recuperación de instalación pendiente. Abre de nuevo la app antes de eliminar esta descarga.") \
+ X("The file is outside this download's folder; deletion was blocked.", "O arquivo está fora da pasta deste download; a exclusão foi bloqueada.", "El archivo está fuera de la carpeta de esta descarga; se bloqueó su eliminación.")
 
 #define EN(en, pt, es) en,
 constexpr const char* kEnglishKeys[] = { SD_TEXTS(EN) };

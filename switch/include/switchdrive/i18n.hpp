@@ -38,6 +38,8 @@ enum class TextId {
     CnmtEmptyContent, CnmtNoInstallableContent, CnmtMissing,
     CnmtSwitchOnly, CnmtTempDirectoryFailed, CnmtPrepareFailed,
     CnmtOpenFailed, CnmtFileMissing, NspContentMissing,
+    CnmtDirectoryReadFailed, CnmtFileOpenFailed, CnmtSizeReadFailed,
+    CnmtDataReadFailed, CnmtInvalidSize, InstallFailureUnknown,
     NspQuerySwitchOnly, NcmUnavailable, NsUnavailable, InstalledQueryFailed,
     NspInstallSwitchOnly, DowngradeBlocked, MetadataNcaMissing,
     InstallDestinationOpenFailed, DestinationNoSpace, InvalidNcaId,
@@ -71,6 +73,9 @@ enum class TextId {
     ButtonA, ButtonX, ButtonY, Folder, FileSize, HomeSubtitle, FilesSubtitle,
     LibrarySubtitle, SettingsSubtitle, NetworkUnavailable, AutoCleanup, Ellipsis,
     ControllerReady, ControllerMissing, InputUnfocused, AppVersion,
+    PreparingDownload, VerifyingDownload, DownloadPauseHint,
+    DeleteDownload, DeleteDownloadWarning, LibraryInstalledHint,
+    DownloadRemovalPending, DownloadRemovalUnsafePath,
     Count
 };
 

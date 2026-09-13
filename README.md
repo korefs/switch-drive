@@ -71,7 +71,12 @@ immediately and is retained after relaunch.
 - **B:** go back; on the main screen, focus the section menu.
 - **X:** download the selected Drive file.
 - **Y:** download and install the selected Drive file.
-- **Y in Library:** remove the selected managed NSP component; saves are retained.
+- **Y in Library:** delete the downloaded package after confirmation, without
+  uninstalling the game or deleting saves. Downloads without a managed installation
+  are removed from the list; installed items retain their installation record.
+  If the package was already removed, Y offers managed component uninstallation.
+- **X in Library:** uninstall the selected managed NSP component after confirmation;
+  saves are retained. This is separate from deleting a downloaded package.
 - **Y in Settings:** change the UI language.
 - **L while browsing:** switch between My Drive and Shared with me.
 - **+:** close the app.

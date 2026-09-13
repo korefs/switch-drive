@@ -146,6 +146,12 @@ bool md5File(const fs::path& path, StorageKind kind, std::string& digest, std::s
         }
         mbedtls_md5_update(&context, buffer.data(), chunk);
         offset += chunk;
+        ui::instance().setProgress(offset, size);
+        if (!pumpUi()) {
+            mbedtls_md5_free(&context);
+            error = tr(TextId::OperationCancelled);
+            return false;
+        }
     }
     std::array<unsigned char, 16> raw{};
     mbedtls_md5_finish(&context, raw.data());
@@ -379,6 +385,7 @@ void installDownloaded(StateStore& store, State& state, Task& task) {
         return;
     }
     if (!installed) {
+        if (error.empty()) error = tr(TextId::InstallFailureUnknown);
         printf(tr(TextId::InstallFailed), error.c_str()); printf("\n");
         return;
     }
@@ -396,6 +403,9 @@ void installDownloaded(StateStore& store, State& state, Task& task) {
 }
 
 void downloadFile(StateStore& store, State& state, const RemoteFile& remote, bool installAfter) {
+    title(tr(TextId::Transfers));
+    printf(tr(TextId::Downloading), remote.name.c_str()); printf("\n%s\n", tr(TextId::PreparingDownload));
+    consoleUpdate(nullptr);
     std::string token, error;
     if (!acquireToken(state, token, error)) {
         printf("\n%s", error.c_str());
@@ -482,6 +492,9 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
     ui::instance().setProgress(task->committedBytes, task->expectedSize);
     printf(tr(TextId::Downloading), task->displayName.c_str()); printf("\n");
     if (installRequested) printf("%s\n", tr(TextId::InstallAfterDownloadQueued));
+    hint(tr(TextId::DownloadPauseHint));
+    printf("%s", formatTransferProgress(task->committedBytes, task->expectedSize, {}).c_str());
+    consoleUpdate(nullptr);
     TransferMeter transferMeter(task->committedBytes);
     auto lastProgressAt = std::chrono::steady_clock::time_point{};
     auto lastCheckpoint = task->committedBytes;
@@ -528,6 +541,10 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
         return;
     }
 
+    printf("\n%s\n", tr(TextId::VerifyingDownload));
+    hint(tr(TextId::Cancel));
+    ui::instance().setProgress(0, task->expectedSize);
+    consoleUpdate(nullptr);
     if (!verifyAndRecord(store, state, *task, error)) {
         task->state = TaskState::Failed;
         task->error = error;
@@ -537,6 +554,8 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
         return;
     }
     printf("\n%s\n", tr(TextId::DownloadComplete));
+    hint("");
+    consoleUpdate(nullptr);
     if (installRequested) installDownloaded(store, state, *task);
     waitForButton();
 }
@@ -652,18 +671,44 @@ void browse(StateStore& store, State& state) {
     }
 }
 
+bool managedNsp(const LibraryItem& item) {
+    return item.installed == InstallKind::Nsp && item.nspInstallState == NspInstallState::Installed && !item.nspMetaId.empty();
+}
+
+void deleteLibraryDownload(StateStore& store, State& state, const LibraryItem& item) {
+    title(tr(TextId::DeleteDownload));
+    printf("%s\n\n%s\n", item.name.c_str(), tr(TextId::DeleteDownloadWarning));
+    hint(tr(TextId::RemoveConfirm));
+    consoleUpdate(nullptr);
+    while (appletMainLoop()) {
+        hidScanInput();
+        const auto confirmation = hidKeysDown(CONTROLLER_P1_AUTO);
+        if (confirmation & HidNpadButton_B) return;
+        if (confirmation & HidNpadButton_X) {
+            std::string error;
+            if (!store.removeDownload(state, item.id, error)) {
+                printf("\n"); printf(tr(TextId::RemovalFailed), error.c_str()); printf("\n");
+                waitForButton();
+            }
+            return;
+        }
+        consoleUpdate(nullptr);
+    }
+}
+
 void library(StateStore& store, State& state) {
     size_t selected = 0;
     bool redraw = true;
     while (appletMainLoop()) {
         if (redraw) {
+            selected = state.library.empty() ? 0 : std::min(selected, state.library.size() - 1);
             title(tr(TextId::Library));
             if (state.library.empty()) printf("%s\n", tr(TextId::NoIndexedDownloads));
             ui::instance().setSubtitle(tr(TextId::LibrarySubtitle));
             std::vector<ui::Row> rows;
             for (const auto& item : state.library) rows.push_back({item.name, item.nspInstallState == NspInstallState::Installed ? tr(TextId::ManagedNspInstalled) : item.localState == LocalState::Present ? fileSize(item.size) : tr(TextId::RemovedAfterInstall), ui::Icon::File});
             ui::instance().setRows(std::move(rows), selected);
-            hint(tr(TextId::LibraryHint));
+            hint(tr(!state.library.empty() && managedNsp(state.library[selected]) && state.library[selected].localState == LocalState::Present ? TextId::LibraryInstalledHint : TextId::LibraryHint));
             consoleUpdate(nullptr);
             redraw = false;
         }
@@ -677,14 +722,9 @@ void library(StateStore& store, State& state) {
         if ((pressed & HidNpadButton_A) && !state.library.empty()) {
             auto& item = state.library[selected];
             if (item.localState == LocalState::Present && !LocalFile::exists(item.localPath, item.storageKind)) {
-                printf("\n%s\n", tr(TextId::RemoveShortcutQuestion));
-                while (appletMainLoop()) {
-                    hidScanInput();
-                    const auto confirmation = hidKeysDown(CONTROLLER_P1_AUTO);
-                    if (confirmation & HidNpadButton_X) { state.library.erase(state.library.begin() + selected); saveOrShow(store, state); return; }
-                    if (confirmation & HidNpadButton_B) break;
-                    consoleUpdate(nullptr);
-                }
+                deleteLibraryDownload(store, state, item);
+                redraw = true;
+                continue;
             } else if (item.localState == LocalState::Present && isInstallablePackage(item.name)) {
                 const auto task = std::find_if(state.tasks.begin(), state.tasks.end(), [&](const Task& candidate) { return candidate.id == item.id; });
                 if (task == state.tasks.end()) {
@@ -697,19 +737,27 @@ void library(StateStore& store, State& state) {
             }
             return;
         }
-        if ((pressed & HidNpadButton_Y) && !state.library.empty()) {
+        if ((pressed & (HidNpadButton_Y | HidNpadButton_X)) && !state.library.empty()) {
             auto& item = state.library[selected];
-            if (item.installed != InstallKind::Nsp || item.nspInstallState != NspInstallState::Installed || item.nspMetaId.empty()) { printf("\n%s\n", tr(TextId::NoManagedNsp)); waitForButton(); return; }
+            if ((pressed & HidNpadButton_Y) && (item.localState == LocalState::Present || !managedNsp(item))) {
+                deleteLibraryDownload(store, state, item);
+                redraw = true;
+                continue;
+            }
+            if (!managedNsp(item)) continue;
             title(tr(TextId::RemoveNsp));
             printf("%s\n%s %s\n", item.name.c_str(), nspContentKindName(item.nspContentKind), item.nspMetaId.c_str());
             if (item.nspContentKind == NspContentKind::BaseGame) printf("%s\n", tr(TextId::BaseRemovalWarning));
             hint(tr(TextId::RemoveConfirm));
-            while (appletMainLoop()) { hidScanInput(); const auto confirmation = hidKeysDown(CONTROLLER_P1_AUTO); if (confirmation & HidNpadButton_B) return; if (confirmation & HidNpadButton_X) {
+            consoleUpdate(nullptr);
+            while (appletMainLoop()) { hidScanInput(); const auto confirmation = hidKeysDown(CONTROLLER_P1_AUTO); if (confirmation & HidNpadButton_B) break; if (confirmation & HidNpadButton_X) {
                 InstalledNspInfo target{true, item.nspStorage, item.nspVersion, item.nspMetaId, item.nspBaseTitleId, item.nspContentKind}; NspInstallJournal journal; std::string error;
                 if (NspInstaller{}.uninstall(target, store, journal, error)) { item.installed = InstallKind::None; item.nspInstallState = NspInstallState::None; item.installedContentId.clear(); saveOrShow(store, state); }
                 else { printf("\n"); printf(tr(TextId::RemovalFailed), error.c_str()); printf("\n"); waitForButton(); }
-                return;
+                break;
             } consoleUpdate(nullptr); }
+            redraw = true;
+            continue;
         }
         if (pressed & HidNpadButton_B) return;
         consoleUpdate(nullptr);

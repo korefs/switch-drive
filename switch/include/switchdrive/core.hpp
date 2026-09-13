@@ -155,6 +155,7 @@ class StateStore {
     explicit StateStore(std::filesystem::path root) : root_(std::move(root)) {}
     State load();
     bool save(const State& state, std::string& error);
+    bool removeDownload(State& state, const std::string& libraryId, std::string& error);
     bool loadInstallJournal(NspInstallJournal& journal, std::string& error, bool& exists) const;
     bool saveInstallJournal(const NspInstallJournal& journal, std::string& error) const;
     bool clearInstallJournal(std::string& error) const;
@@ -191,6 +192,19 @@ class NroInstaller {
     bool install(const std::filesystem::path& source, const std::filesystem::path& destination, bool replace, std::string& error) const;
     bool uninstall(const std::filesystem::path& destination, std::string& error) const;
 };
+
+// The caller owns the mounted filesystem. Implementations own and close their
+// directory/file handles, including on failure. Results use Horizon encoding.
+class CnmtFileReader {
+  public:
+    virtual ~CnmtFileReader() = default;
+    virtual uint32_t openDirectory() = 0;
+    virtual uint32_t nextFile(std::string& name, bool& end) = 0;
+    virtual uint32_t openFile(const std::string& absolutePath) = 0;
+    virtual uint32_t fileSize(int64_t& size) = 0;
+    virtual uint32_t readFile(void* data, size_t size, uint64_t& bytesRead) = 0;
+};
+bool readCnmtFile(CnmtFileReader& reader, std::vector<uint8_t>& bytes, std::string& error);
 
 // The NCM adapter has a narrow interface so its journal can be recovered without
 // coupling downloads or the UI to system services. Its Switch implementation is

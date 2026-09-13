@@ -7,6 +7,7 @@
 
 namespace switchdrive {
 using ActivityCallback = std::function<bool()>;
+bool continueHttpActivity(const ActivityCallback* activity);
 enum class DownloadStatus { Completed, AlreadyComplete, Paused, RangeRejected, Failed };
 
 struct DownloadResult {
