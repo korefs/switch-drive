@@ -50,7 +50,7 @@ public static class AdminPanel
         {
             var settings = await db.Settings.AsNoTracking().SingleAsync();
             var files = await db.Catalog.CountAsync(x => x.Kind == CatalogKind.File && x.Active && !x.Suppressed); var hidden = await db.Catalog.CountAsync(x => x.Suppressed); var tokenCount = await db.DeviceTokens.CountAsync(x => x.RevokedAt == null);
-            var catalog = await db.Catalog.AsNoTracking().OrderBy(x => x.RelativePath).Take(500).ToListAsync(); var devices = await db.DeviceTokens.AsNoTracking().OrderByDescending(x => x.CreatedAt).Take(100).ToListAsync(); var csrf = anti.GetAndStoreTokens(ctx).RequestToken!;
+            var catalog = await db.Catalog.AsNoTracking().OrderBy(x => x.RelativePath).Take(500).ToListAsync(); var devices = (await db.DeviceTokens.AsNoTracking().ToListAsync()).OrderByDescending(x => x.CreatedAt).Take(100).ToList(); var csrf = anti.GetAndStoreTokens(ctx).RequestToken!;
             var body = $"<p>Status: <b>{H(settings.LastScanStatus)}</b> &middot; Files: {files} &middot; Hidden: {hidden} &middot; Devices: {tokenCount}</p><p>Library: <code>{H(settings.LibraryPath)}</code></p>" +
                 $"<form method=post action=/admin/scan>{Token(csrf)}<button>Scan now</button></form>" +
                 $"<form method=post action=/admin/settings>{Token(csrf)}<label>Name<input name=name value=\"{H(settings.InstanceName)}\"></label><label>Container library path<input name=path value=\"{H(settings.LibraryPath)}\"></label><label class=inline><input type=checkbox name=anonymous {(settings.AuthRequired ? "" : "checked")}> Anonymous read access</label><button>Save settings</button></form>" +

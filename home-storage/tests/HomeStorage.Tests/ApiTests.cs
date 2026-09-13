@@ -90,6 +90,9 @@ public sealed class ApiTests : IDisposable
         using var response = await client.PostAsync("/setup", new FormUrlEncodedContent(fields), TestContext.Current.CancellationToken); Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
         using var scope = factory.Services.CreateScope(); var db = scope.ServiceProvider.GetRequiredService<HomeStorageDb>(); var admin = await db.Admins.SingleAsync(TestContext.Current.CancellationToken); var library = await db.LibraryCredentials.SingleAsync(TestContext.Current.CancellationToken);
         Assert.DoesNotContain("administrator-password", admin.PasswordHash); Assert.DoesNotContain("library-password", library.PasswordHash); Assert.True(library.AllowCatalogManage);
+        var login = await client.GetStringAsync("/login", TestContext.Current.CancellationToken); csrf = Regex.Match(login, "name=__RequestVerificationToken value=\"([^\"]+)\"").Groups[1].Value; Assert.NotEmpty(csrf);
+        using var loginResponse = await client.PostAsync("/login", new FormUrlEncodedContent(new Dictionary<string, string> { { "__RequestVerificationToken", csrf }, { "user", "admin" }, { "password", "administrator-password" } }), TestContext.Current.CancellationToken); Assert.Equal(HttpStatusCode.Redirect, loginResponse.StatusCode);
+        using var panelResponse = await client.GetAsync("/admin", TestContext.Current.CancellationToken); Assert.Equal(HttpStatusCode.OK, panelResponse.StatusCode);
     }
 
     private WebApplicationFactory<Program> Factory()
