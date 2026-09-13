@@ -108,6 +108,14 @@ const Pfs0Entry* findContentEntry(const Pfs0& pfs0, const std::string& id, bool 
     return nullptr;
 }
 #ifdef __SWITCH__
+std::string resultError(i18n::TextId text, Result result) {
+    std::array<char, 192> message{};
+    std::snprintf(message.data(), message.size(), i18n::tr(text), static_cast<unsigned>(result));
+    return message.data();
+}
+bool fsPathNotFound(Result result) { return R_MODULE(result) == 2 && R_DESCRIPTION(result) == 1; }
+bool fsPathAlreadyExists(Result result) { return R_MODULE(result) == 2 && R_DESCRIPTION(result) == 2; }
+
 struct ApplicationRecordMeta {
     NcmContentMetaKey key;
     uint64_t storageId;
@@ -265,36 +273,50 @@ bool NspInstaller::inspect(const fs::path& source, StorageKind kind, NspPackageI
     error = i18n::tr(i18n::TextId::CnmtSwitchOnly);
     return false;
 #else
-    // ContentMeta must be opened through an FS content path. Stage only this
-    // package's CNMT under the microSD content root; homebrew normally cannot
-    // mount the internal SystemContent BIS partition directly.
-    constexpr const char* temporaryDirectory = "sdmc:/Nintendo/Contents/switch-drive-temp";
-    std::error_code directoryError;
-    fs::create_directories(temporaryDirectory, directoryError);
-    if (directoryError) { error = i18n::tr(i18n::TextId::CnmtTempDirectoryFailed); return false; }
-    const fs::path temporary = fs::path(temporaryDirectory) / meta->name;
-    const auto cleanupTemporary = [&]() { std::remove(temporary.string().c_str()); fsdevCommitDevice("sdmc"); };
-    std::FILE* output = std::fopen(temporary.string().c_str(), "wb");
-    if (!output) { error = i18n::tr(i18n::TextId::CnmtPrepareFailed); return false; }
+    // Open the real SD content filesystem instead of assuming how its root is
+    // exposed through sdmc:. This also follows emuMMC redirection correctly.
+    FsFileSystem temporaryFs{};
+    Result rc = fsOpenContentStorageFileSystem(&temporaryFs, FsContentStorageId_SdCard);
+    if (R_FAILED(rc)) { error = resultError(i18n::TextId::CnmtTempDirectoryFailed, rc); return false; }
+    constexpr const char* temporaryDirectory = "/switch-drive-temp";
+    rc = fsFsCreateDirectory(&temporaryFs, temporaryDirectory);
+    if (R_FAILED(rc) && !fsPathAlreadyExists(rc)) {
+        fsFsClose(&temporaryFs); error = resultError(i18n::TextId::CnmtTempDirectoryFailed, rc); return false;
+    }
+    const std::string temporary = std::string(temporaryDirectory) + "/" + meta->name;
+    const auto cleanupTemporary = [&]() {
+        fsFsDeleteFile(&temporaryFs, temporary.c_str());
+        fsFsCommit(&temporaryFs);
+        fsFsClose(&temporaryFs);
+    };
+    rc = fsFsDeleteFile(&temporaryFs, temporary.c_str());
+    if (R_FAILED(rc) && !fsPathNotFound(rc)) { cleanupTemporary(); error = resultError(i18n::TextId::CnmtPrepareFailed, rc); return false; }
+    rc = fsFsCreateFile(&temporaryFs, temporary.c_str(), static_cast<s64>(meta->size), 0);
+    if (R_FAILED(rc)) { cleanupTemporary(); error = resultError(i18n::TextId::CnmtPrepareFailed, rc); return false; }
+    FsFile output{};
+    rc = fsFsOpenFile(&temporaryFs, temporary.c_str(), FsOpenMode_Write, &output);
+    if (R_FAILED(rc)) { cleanupTemporary(); error = resultError(i18n::TextId::CnmtPrepareFailed, rc); return false; }
     std::array<uint8_t, 256 * 1024> buffer{};
     bool copied = true;
     for (uint64_t offset = 0; offset < meta->size;) {
         const size_t amount = static_cast<size_t>(std::min<uint64_t>(buffer.size(), meta->size - offset));
-        if (!pfs0.read(*meta, offset, buffer.data(), amount, error) || std::fwrite(buffer.data(), 1, amount, output) != amount) { copied = false; break; }
+        if (!pfs0.read(*meta, offset, buffer.data(), amount, error)) { copied = false; break; }
+        rc = fsFileWrite(&output, static_cast<s64>(offset), buffer.data(), amount, FsWriteOption_None);
+        if (R_FAILED(rc)) { copied = false; error = resultError(i18n::TextId::CnmtPrepareFailed, rc); break; }
         offset += amount;
     }
-    std::fclose(output);
-    if (!copied || R_FAILED(fsdevCommitDevice("sdmc"))) { cleanupTemporary(); if (copied) error = i18n::tr(i18n::TextId::CnmtPrepareFailed); return false; }
+    if (copied) rc = fsFileFlush(&output);
+    fsFileClose(&output);
+    if (copied && R_SUCCEEDED(rc)) rc = fsFsCommit(&temporaryFs);
+    if (!copied || R_FAILED(rc)) { cleanupTemporary(); if (copied) error = resultError(i18n::TextId::CnmtPrepareFailed, rc); return false; }
     char contentPath[FS_MAX_PATH]{}; std::snprintf(contentPath, sizeof(contentPath), "@SdCardContent://switch-drive-temp/%s", meta->name.c_str());
     FsRightsId rights{}; uint8_t keyGeneration{};
-    Result rc = fsGetRightsIdAndKeyGenerationByPath(contentPath, FsContentAttributes_All, &keyGeneration, &rights);
+    rc = fsGetRightsIdAndKeyGenerationByPath(contentPath, FsContentAttributes_All, &keyGeneration, &rights);
     FsFileSystem cnmtFs{};
     if (R_SUCCEEDED(rc)) rc = fsOpenFileSystemWithId(&cnmtFs, 0, FsFileSystemType_ContentMeta, contentPath, FsContentAttributes_All);
     if (R_FAILED(rc)) {
         cleanupTemporary();
-        std::array<char, 192> message{};
-        std::snprintf(message.data(), message.size(), i18n::tr(i18n::TextId::CnmtOpenFailed), static_cast<unsigned>(rc));
-        error = message.data();
+        error = resultError(i18n::TextId::CnmtOpenFailed, rc);
         return false;
     }
     FsDir dir{}; rc = fsFsOpenDirectory(&cnmtFs, "/", FsDirOpenMode_ReadFiles, &dir);

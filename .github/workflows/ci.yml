@@ -18,6 +18,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libmbedtls-dev libzstd-dev
       - name: Configure tests
         run: cmake -S tests -B build/tests
       - name: Build tests

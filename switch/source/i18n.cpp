@@ -114,8 +114,8 @@ using Catalog = std::array<const char*, textCount()>;
  X("CNMT has no installable content", "CNMT sem conteúdo instalável", "CNMT no tiene contenido instalable") \
  X("CNMT missing", "CNMT ausente", "Falta CNMT") \
  X("Reading encrypted CNMT requires a Nintendo Switch with Atmosphère", "A leitura do CNMT criptografado exige um Nintendo Switch com Atmosphère", "Leer CNMT cifrado requiere una Nintendo Switch con Atmosphère") \
- X("Could not prepare the temporary CNMT directory on microSD", "não foi possível preparar a pasta temporária do CNMT no microSD", "no se pudo preparar la carpeta temporal del CNMT en microSD") \
- X("Could not prepare CNMT", "não foi possível preparar o CNMT", "no se pudo preparar el CNMT") \
+ X("Could not prepare the temporary CNMT directory on microSD (Result 0x%08X)", "não foi possível preparar a pasta temporária do CNMT no microSD (Result 0x%08X)", "no se pudo preparar la carpeta temporal del CNMT en microSD (Result 0x%08X)") \
+ X("Could not prepare CNMT (Result 0x%08X)", "não foi possível preparar o CNMT (Result 0x%08X)", "no se pudo preparar el CNMT (Result 0x%08X)") \
  X("Could not open CNMT; check Atmosphère and patches (Result 0x%08X)", "não foi possível abrir o CNMT; verifique Atmosphère e patches (Result 0x%08X)", "no se pudo abrir el CNMT; comprueba Atmosphère y parches (Result 0x%08X)") \
  X("CNMT file missing", "arquivo CNMT ausente", "falta el archivo CNMT") \
  X("Invalid NSP/NSZ: content missing or wrong size", "NSP/NSZ inválido: conteúdo ausente ou com tamanho incorreto", "NSP/NSZ inválido: falta contenido o tiene tamaño incorrecto") \
