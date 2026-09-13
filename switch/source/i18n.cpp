@@ -41,7 +41,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("The partial file lacks enough metadata to resume safely.", "O parcial não tem metadados suficientes para retomar com segurança.", "El archivo parcial no tiene metadatos suficientes para reanudar con seguridad.") \
  X("Invalid partial: larger than remote file", "Parcial inválido: maior que o arquivo remoto", "Parcial inválido: mayor que el archivo remoto") \
  X("The download destination already exists", "O destino de download já existe", "El destino de descarga ya existe") \
- X("MD5 checksum does not match", "checksum MD5 não confere", "La suma MD5 no coincide") \
+ X("Checksum does not match", "O checksum não confere", "La suma de comprobación no coincide") \
  X("Installation failed: %s", "Instalação falhou: %s", "La instalación falló: %s") \
  X("Installed — cleanup pending: %s", "Instalado — limpeza pendente: %s", "Instalado — limpieza pendiente: %s") \
  X("Restart download", "Reiniciar download", "Reiniciar descarga") \
@@ -162,6 +162,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("Server did not confirm download range", "servidor não confirmou a faixa do download", "el servidor no confirmó el rango de descarga") \
  X("Could not record response", "não foi possível registrar a resposta do download", "no se pudo registrar la respuesta de descarga") \
  X("Invalid service JSON", "JSON inválido do serviço", "JSON de servicio inválido") \
+ X("HTTP request failed (status %ld)", "Falha na requisição HTTP (status %ld)", "La solicitud HTTP falló (estado %ld)") \
  X("curl unavailable", "curl indisponível", "curl no disponible") \
  X("download paused", "download pausado", "descarga pausada") \
  X("download range rejected", "faixa de download recusada", "rango de descarga rechazado") \
@@ -248,15 +249,32 @@ using Catalog = std::array<const char*, textCount()>;
  X("Installation recovery is pending. Reopen the app before deleting this download.", "Há uma recuperação de instalação pendente. Reabra o app antes de excluir este download.", "Hay una recuperación de instalación pendiente. Abre de nuevo la app antes de eliminar esta descarga.") \
  X("The file is outside this download's folder; deletion was blocked.", "O arquivo está fora da pasta deste download; a exclusão foi bloqueada.", "El archivo está fuera de la carpeta de esta descarga; se bloqueó su eliminación.")
 
+#define SD_HOME_TEXTS(X) \
+ X("Storage providers", "Provedores de armazenamento", "Proveedores de almacenamiento") \
+ X("Home Storage", "Home Storage", "Home Storage") \
+ X("Detect on network", "Detectar na rede", "Detectar en la red") \
+ X("Manual setup", "Configuração manual", "Configuración manual") \
+ X("Server address", "Endereço do servidor", "Dirección del servidor") \
+ X("Username", "Usuário", "Usuario") \
+ X("Password", "Senha", "Contraseña") \
+ X("Searching for Home Storage...", "Procurando Home Storage...", "Buscando Home Storage...") \
+ X("No Home Storage service was found.", "Nenhum serviço Home Storage foi encontrado.", "No se encontró ningún servicio Home Storage.") \
+ X("Invalid server address.", "Endereço de servidor inválido.", "Dirección de servidor inválida.") \
+ X("A: open  X: download  Y: download and install  ZL: hide  B: back", "A: abrir  X: baixar  Y: baixar e instalar  ZL: ocultar  B: voltar", "A: abrir  X: descargar  Y: descargar e instalar  ZL: ocultar  B: volver") \
+ X("Hide catalog entry", "Ocultar item do catálogo", "Ocultar elemento del catálogo") \
+ X("Hide this item from Home Storage? The PC file will not be deleted.", "Ocultar este item do Home Storage? O arquivo do PC não será excluído.", "¿Ocultar este elemento de Home Storage? El archivo del PC no se eliminará.") \
+ X("Home Storage connected: %s", "Home Storage conectado: %s", "Home Storage conectado: %s") \
+ X("ZL", "ZL", "ZL")
+
 #define EN(en, pt, es) en,
-constexpr const char* kEnglishKeys[] = { SD_TEXTS(EN) };
-constexpr Catalog kEnglish = { SD_TEXTS(EN) };
+constexpr const char* kEnglishKeys[] = { SD_TEXTS(EN) SD_HOME_TEXTS(EN) };
+constexpr Catalog kEnglish = { SD_TEXTS(EN) SD_HOME_TEXTS(EN) };
 #define PT(en, pt, es) pt,
-constexpr const char* kPortugueseKeys[] = { SD_TEXTS(PT) };
-constexpr Catalog kPortuguese = { SD_TEXTS(PT) };
+constexpr const char* kPortugueseKeys[] = { SD_TEXTS(PT) SD_HOME_TEXTS(PT) };
+constexpr Catalog kPortuguese = { SD_TEXTS(PT) SD_HOME_TEXTS(PT) };
 #define ES(en, pt, es) es,
-constexpr const char* kSpanishKeys[] = { SD_TEXTS(ES) };
-constexpr Catalog kSpanish = { SD_TEXTS(ES) };
+constexpr const char* kSpanishKeys[] = { SD_TEXTS(ES) SD_HOME_TEXTS(ES) };
+constexpr Catalog kSpanish = { SD_TEXTS(ES) SD_HOME_TEXTS(ES) };
 #undef EN
 #undef PT
 #undef ES

@@ -52,7 +52,7 @@ enum class TextId {
     MetadataOpenFailed, ManagedVersionMissing, ContentEnumerateFailed,
     MetadataRemovalFailed,
     HttpWriteNotAllowed, ServerRangeNotConfirmed, ResponseSaveFailed,
-    InvalidServiceJson, CurlUnavailable, DownloadPaused, RangeDenied,
+    InvalidServiceJson, HttpRequestFailed, CurlUnavailable, DownloadPaused, RangeDenied,
     DownloadSizeMismatch, PairingResponseIncomplete, AwaitingAuthorization,
     AccessTokenMissing, SaveFailed, AccountLabel, BrowseDrive, OpenLibrary,
     LibraryItemCount, InstallingBytes, NspInstalledSuffix, PartialIdentityRestart,
@@ -76,6 +76,10 @@ enum class TextId {
     PreparingDownload, VerifyingDownload, DownloadPauseHint,
     DeleteDownload, DeleteDownloadWarning, LibraryInstalledHint,
     DownloadRemovalPending, DownloadRemovalUnsafePath,
+    StorageProviders, HomeStorage, DetectNetwork, ManualSetup, ServerAddress,
+    Username, Password, DetectingStorage, NoStorageFound, InvalidAddress,
+    HomeBrowseHint, HideCatalogEntry, HideCatalogConfirm, ProviderConnected,
+    ButtonZL,
     Count
 };
 

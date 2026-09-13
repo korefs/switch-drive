@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/HomeStorage.Api/HomeStorage.Api.csproj" />
+  <Project Path="tests/HomeStorage.Tests/HomeStorage.Tests.csproj" />
+</Solution>

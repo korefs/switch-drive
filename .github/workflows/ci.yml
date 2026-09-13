@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install test dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libmbedtls-dev libzstd-dev
+        run: sudo apt-get update && sudo apt-get install --yes libmbedtls-dev libzstd-dev libcurl4-openssl-dev libjansson-dev
       - name: Configure tests
         run: cmake -S tests -B build/tests
       - name: Build tests
@@ -46,6 +46,34 @@ jobs:
         run: npm ci
       - name: Build
         run: npm run build
+
+  home-storage:
+    name: Home Storage build and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test in the .NET 10 SDK container stage
+        run: docker build --target test --tag switch-drive-home-storage-tests home-storage
+      - name: Smoke test the runtime container
+        run: |
+          mkdir -p /tmp/home-storage-library
+          docker build --target final --tag switch-drive-home-storage home-storage
+          docker run --detach --name home-storage-smoke --publish 18080:8080 --env SETUP_TOKEN=ci-only-placeholder --volume /tmp/home-storage-library:/library:ro switch-drive-home-storage
+          trap 'docker rm --force home-storage-smoke >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18080/health; then break; fi
+            if [ "$attempt" = 30 ]; then docker logs home-storage-smoke; exit 1; fi
+            sleep 1
+          done
+          docker rm --force home-storage-smoke
+          trap - EXIT
+      - name: Validate Compose
+        working-directory: home-storage
+        env:
+          HOST_LIBRARY_PATH: /tmp
+          SETUP_TOKEN: ci-only-placeholder
+          CLOUDFLARE_TUNNEL_TOKEN: ci-only-placeholder
+        run: docker compose config --quiet
 
   switch-client:
     name: Switch client build

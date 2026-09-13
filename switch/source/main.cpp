@@ -5,6 +5,7 @@
 
 #include <switch.h>
 #include <mbedtls/md5.h>
+#include <mbedtls/sha256.h>
 #include <curl/curl.h>
 
 #include <array>
@@ -48,6 +49,16 @@ std::string networkError() {
 std::string accountName(const State& state) {
     for (const auto& account : state.accounts) if (account.id == state.lastAccountId) return account.email;
     return tr(TextId::NoAccountConnected);
+}
+
+ProviderConfig* providerById(State& state, const std::string& id) {
+    for (auto& provider : state.providers) if (provider.id == id) return &provider;
+    return nullptr;
+}
+
+std::string activeProviderName(State& state) {
+    auto* provider = providerById(state, state.activeProviderId);
+    return !provider || provider->kind == ProviderKind::GoogleDrive ? tr(TextId::MyDrive) : provider->name;
 }
 
 std::string fileSize(uint64_t bytes) {
@@ -162,6 +173,14 @@ bool md5File(const fs::path& path, StorageKind kind, std::string& digest, std::s
     return true;
 }
 
+bool sha256File(const fs::path& path, StorageKind kind, std::string& digest, std::string& error) {
+    LocalFile file; uint64_t size{}; if (!file.open(path, kind, false, error) || !file.size(size, error)) return false;
+    mbedtls_sha256_context context; mbedtls_sha256_init(&context); mbedtls_sha256_starts(&context, 0);
+    std::array<unsigned char, 64 * 1024> buffer{};
+    for (uint64_t offset = 0; offset < size;) { const size_t chunk = static_cast<size_t>(std::min<uint64_t>(buffer.size(), size - offset)); if (!file.readAt(offset, buffer.data(), chunk, error)) { mbedtls_sha256_free(&context); return false; } mbedtls_sha256_update(&context, buffer.data(), chunk); offset += chunk; ui::instance().setProgress(offset, size); if (!pumpUi()) { mbedtls_sha256_free(&context); error = tr(TextId::OperationCancelled); return false; } }
+    std::array<unsigned char, 32> raw{}; mbedtls_sha256_finish(&context, raw.data()); mbedtls_sha256_free(&context); char output[65]{}; for (size_t i = 0; i < raw.size(); ++i) std::snprintf(output + i * 2, 3, "%02x", raw[i]); digest = output; return true;
+}
+
 bool connectAccount(StateStore& store, State& state) {
     title(tr(TextId::ConnectDrive));
     if (!networkReady) { printf("%s\n", networkError().c_str()); waitForButton(); return false; }
@@ -213,17 +232,18 @@ bool acquireToken(const State& state, std::string& token, std::string& error) {
     return AuthClient(activeHttp(), state.serviceUrl).accessToken(state.sessionToken, state.lastAccountId, token, error);
 }
 
-bool sameRemote(const Task& task, const RemoteFile& remote, const std::string& accountId) {
-    return task.accountId == accountId && task.remoteId == remote.id && task.revision == remote.revision && task.expectedSize == remote.size && task.md5 == remote.md5;
+bool sameRemote(const Task& task, const RemoteEntry& remote, const std::string& accountId) {
+    const bool checksumMatches = remote.checksum.kind == ChecksumKind::Sha256 ? task.sha256 == remote.checksum.value : remote.checksum.kind == ChecksumKind::Md5 ? task.md5 == remote.checksum.value : task.md5.empty() && task.sha256.empty();
+    return task.providerId == remote.providerId && task.accountId == accountId && task.remoteId == remote.id && task.revision == remote.revision && task.expectedSize == remote.size && checksumMatches;
 }
 
 bool hasResumeIdentity(const Task& task) {
-    return !task.accountId.empty() && !task.remoteId.empty() && !task.revision.empty() && task.expectedSize > 0 && !task.localPath.empty();
+    return !task.providerId.empty() && !task.remoteId.empty() && !task.revision.empty() && task.expectedSize > 0 && !task.localPath.empty();
 }
 
-Task* findIncompleteTask(State& state, const std::string& accountId, const std::string& remoteId) {
+Task* findIncompleteTask(State& state, const std::string& providerId, const std::string& accountId, const std::string& remoteId) {
     for (auto& task : state.tasks) {
-        if (task.accountId == accountId && task.remoteId == remoteId && task.state != TaskState::Completed && task.state != TaskState::Cancelled) return &task;
+        if (task.providerId == providerId && task.accountId == accountId && task.remoteId == remoteId && task.state != TaskState::Completed && task.state != TaskState::Cancelled) return &task;
     }
     return nullptr;
 }
@@ -295,12 +315,14 @@ bool hasEnoughSpace(uint64_t needed) {
     return !ec && space.available >= needed;
 }
 
-void applyRemote(Task& task, const RemoteFile& remote, const std::string& accountId, const StateStore& store) {
+void applyRemote(Task& task, const RemoteEntry& remote, const std::string& accountId, const StateStore& store) {
+    task.providerId = remote.providerId.empty() ? "google-drive" : remote.providerId;
     task.accountId = accountId;
     task.remoteId = remote.id;
     task.displayName = remote.name;
     task.expectedSize = remote.size;
-    task.md5 = remote.md5;
+    task.md5 = remote.checksum.kind == ChecksumKind::Md5 ? remote.checksum.value : "";
+    task.sha256 = remote.checksum.kind == ChecksumKind::Sha256 ? remote.checksum.value : "";
     task.revision = remote.revision;
     task.etag.clear();
     task.storageKind = storageKindForSize(remote.size);
@@ -314,8 +336,9 @@ bool verifyAndRecord(StateStore& store, State& state, Task& task, std::string& e
     task.state = TaskState::Verifying;
     saveOrShow(store, state);
     std::string digest;
-    if (!md5File(task.localPath, task.storageKind, digest, error)) return false;
-    if (!task.md5.empty() && digest != task.md5) {
+    const bool useSha256 = !task.sha256.empty();
+    if (!(useSha256 ? sha256File(task.localPath, task.storageKind, digest, error) : md5File(task.localPath, task.storageKind, digest, error))) return false;
+    if ((useSha256 && digest != task.sha256) || (!useSha256 && !task.md5.empty() && digest != task.md5)) {
         error = tr(TextId::ChecksumMismatch);
         return false;
     }
@@ -326,11 +349,13 @@ bool verifyAndRecord(StateStore& store, State& state, Task& task, std::string& e
     if (existing == state.library.end()) {
         LibraryItem item;
         item.id = task.id;
+        item.providerId = task.providerId;
         item.accountId = task.accountId;
         item.remoteId = task.remoteId;
         item.name = task.displayName;
         item.localPath = task.localPath;
         item.md5 = task.md5;
+        item.sha256 = task.sha256;
         item.size = task.expectedSize;
         item.localState = LocalState::Present;
         item.storageKind = task.storageKind;
@@ -402,21 +427,26 @@ void installDownloaded(StateStore& store, State& state, Task& task) {
     if (library->installed == InstallKind::Nsp && library->nspContentKind != NspContentKind::BaseGame) printf("%s\n", tr(TextId::NonBaseHomeHint));
 }
 
-void downloadFile(StateStore& store, State& state, const RemoteFile& remote, bool installAfter) {
+void downloadFile(StateStore& store, State& state, const RemoteEntry& remote, bool installAfter) {
     title(tr(TextId::Transfers));
     printf(tr(TextId::Downloading), remote.name.c_str()); printf("\n%s\n", tr(TextId::PreparingDownload));
     consoleUpdate(nullptr);
     std::string token, error;
-    if (!acquireToken(state, token, error)) {
+    const std::string providerId = remote.providerId.empty() ? "google-drive" : remote.providerId;
+    const bool homeStorage = providerId != "google-drive";
+    ProviderConfig* home = homeStorage ? providerById(state, providerId) : nullptr;
+    if (homeStorage && !home) { printf("\n%s", tr(TextId::ConfigMissing)); waitForButton(); return; }
+    if (!homeStorage && !acquireToken(state, token, error)) {
         printf("\n%s", error.c_str());
         waitForButton();
         return;
     }
 
-    Task* task = findIncompleteTask(state, state.lastAccountId, remote.id);
+    const std::string sourceAccount = homeStorage ? "" : state.lastAccountId;
+    Task* task = findIncompleteTask(state, providerId, sourceAccount, remote.id);
     bool restart = false;
     if (task) {
-        const bool changed = !sameRemote(*task, remote, state.lastAccountId);
+        const bool changed = !sameRemote(*task, remote, sourceAccount);
         const bool missingIdentity = !hasResumeIdentity(*task);
         if (changed || missingIdentity || task->committedBytes) {
             const ResumeChoice choice = askResumeChoice(*task, changed, missingIdentity);
@@ -427,7 +457,7 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
         Task newTask;
         newTask.id = makeId();
         newTask.deleteAfterInstall = state.deleteAfterInstall;
-        applyRemote(newTask, remote, state.lastAccountId, store);
+        applyRemote(newTask, remote, sourceAccount, store);
         state.tasks.push_back(std::move(newTask));
         task = &state.tasks.back();
     }
@@ -439,7 +469,7 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
             waitForButton();
             return;
         }
-        applyRemote(*task, remote, state.lastAccountId, store);
+        applyRemote(*task, remote, sourceAccount, store);
     }
     const bool installRequested = task->installAfterDownload || installAfter;
     task->installAfterDownload = installRequested;
@@ -500,9 +530,10 @@ void downloadFile(StateStore& store, State& state, const RemoteFile& remote, boo
     auto lastCheckpoint = task->committedBytes;
     auto lastCheckpointAt = std::chrono::steady_clock::now();
     DownloadResult result;
+    const DownloadRequest request = homeStorage && home ? HomeStorageProvider(activeHttp(), *home).downloadRequest(remote) : GoogleStorageProvider(activeHttp(), token).downloadRequest(remote);
     const bool downloaded = task->committedBytes == task->expectedSize || activeHttp().download(
-        DriveClient(activeHttp()).mediaUrl(remote),
-        {"Authorization: Bearer " + token},
+        request.url,
+        request.headers,
         output,
         task->committedBytes,
         task->expectedSize,
@@ -597,6 +628,82 @@ void recoverInstallJournal(StateStore& store, State& state) {
     saveOrShow(store, state);
 }
 
+bool promptText(const char* label, std::string& value, bool password = false) {
+#ifdef __SWITCH__
+    SwkbdConfig keyboard; if (R_FAILED(swkbdCreate(&keyboard, 0))) return false;
+    if (password) swkbdConfigMakePresetPassword(&keyboard); else swkbdConfigMakePresetDefault(&keyboard); swkbdConfigSetHeaderText(&keyboard, label);
+    swkbdConfigSetInitialText(&keyboard, value.c_str());
+    std::array<char, 512> buffer{}; const Result result = swkbdShow(&keyboard, buffer.data(), buffer.size()); swkbdClose(&keyboard);
+    if (R_FAILED(result)) return false;
+    value = buffer.data();
+    return !value.empty();
+#else
+    (void)label; (void)value; (void)password; return false;
+#endif
+}
+
+bool selectDiscovered(const std::vector<DiscoveredHomeStorage>& found, size_t& selected) {
+    selected = 0;
+    while (appletMainLoop()) {
+        title(tr(TextId::DetectNetwork)); std::vector<ui::Row> rows; for (const auto& item : found) rows.push_back({item.health.name, item.baseUrl, ui::Icon::Cloud}); ui::instance().setRows(std::move(rows), selected); hint(tr(TextId::NavigationHint));
+        hidScanInput(); const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO); const int touched = ui::instance().takeRowSelection(); if (touched >= 0 && static_cast<size_t>(touched) < found.size()) selected = static_cast<size_t>(touched);
+        if (pressed & HidNpadButton_Down) selected = (selected + 1) % found.size();
+        if (pressed & HidNpadButton_Up) selected = (selected + found.size() - 1) % found.size();
+        if (pressed & HidNpadButton_A) return true;
+        if (pressed & HidNpadButton_B) return false;
+        consoleUpdate(nullptr);
+    }
+    return false;
+}
+
+void configureHomeStorage(StateStore& store, State& state) {
+    if (!networkReady) { title(tr(TextId::HomeStorage)); printf("%s\n", networkError().c_str()); waitForButton(); return; }
+    size_t choice = 0; std::string address;
+    while (appletMainLoop()) {
+        title(tr(TextId::HomeStorage)); ui::instance().setRows({{tr(TextId::DetectNetwork), tr(TextId::DetectingStorage), ui::Icon::Cloud}, {tr(TextId::ManualSetup), tr(TextId::ServerAddress), ui::Icon::Settings}}, choice); hint(tr(TextId::NavigationHint));
+        hidScanInput(); const auto pressed = hidKeysDown(CONTROLLER_P1_AUTO); const int touched = ui::instance().takeRowSelection(); if (touched >= 0) choice = static_cast<size_t>(touched); if (pressed & (HidNpadButton_Up | HidNpadButton_Down)) choice = 1 - choice; if (pressed & HidNpadButton_B) return;
+        if (pressed & HidNpadButton_A) {
+            if (choice == 0) { title(tr(TextId::DetectNetwork)); printf("%s\n", tr(TextId::DetectingStorage)); consoleUpdate(nullptr); std::vector<DiscoveredHomeStorage> found, validated; std::string error; if (discoverHomeStorage(found, error)) for (const auto& candidate : found) { HomeStorageHealth checked; if (HomeStorageClient(activeHttp()).health(candidate.baseUrl, checked, error) && checked.instanceId == candidate.health.instanceId) validated.push_back({candidate.baseUrl,checked}); } if (validated.empty()) { printf("%s\n", tr(TextId::NoStorageFound)); waitForButton(); return; } size_t selected{}; if (!selectDiscovered(validated, selected)) return; address = validated[selected].baseUrl; }
+            else if (!promptText(tr(TextId::ServerAddress), address) || !normalizeHomeStorageUrl(address, address)) { title(tr(TextId::HomeStorage)); printf("%s\n", tr(TextId::InvalidAddress)); waitForButton(); return; }
+            break;
+        }
+        consoleUpdate(nullptr);
+    }
+    HomeStorageClient client(activeHttp()); HomeStorageHealth health; std::string error; if (!client.health(address, health, error)) { title(tr(TextId::HomeStorage)); printf("%s\n", error.c_str()); waitForButton(); return; }
+    std::string token;bool canManage=false;if (health.authRequired) { std::string username, password; if (!promptText(tr(TextId::Username), username) || !promptText(tr(TextId::Password), password, true)) return; if (!client.authenticate(address, username, password, token, canManage, error)) { title(tr(TextId::HomeStorage)); printf("%s\n", error.c_str()); waitForButton(); return; } }
+    const std::string id = "home-" + health.instanceId; auto* existing = providerById(state, id); if (!existing) { state.providers.push_back({}); existing = &state.providers.back(); }
+    existing->id=id; existing->kind=ProviderKind::HomeStorage; existing->name=health.name; existing->baseUrl=address; existing->accessToken=token; existing->lastFolderId="root";existing->canManageCatalog=canManage; state.activeProviderId=id; saveOrShow(store,state);
+    title(tr(TextId::HomeStorage)); printf(tr(TextId::ProviderConnected), health.name.c_str()); printf("\n"); waitForButton();
+}
+
+bool confirmHideHome(const ProviderConfig& provider, const RemoteEntry& file) {
+    title(tr(TextId::HideCatalogEntry)); printf("%s\n\n%s\n", file.name.c_str(), tr(TextId::HideCatalogConfirm)); hint(tr(TextId::RemoveConfirm)); consoleUpdate(nullptr);
+    while(appletMainLoop()){hidScanInput();const auto pressed=hidKeysDown(CONTROLLER_P1_AUTO);if(pressed&HidNpadButton_B)return false;if(pressed&HidNpadButton_X){std::string error;if(!HomeStorageClient(activeHttp()).hide(provider,file.id,error)){printf("\n%s\n",error.c_str());waitForButton();}return true;}consoleUpdate(nullptr);}return false;
+}
+
+void browseHome(StateStore& store, State& state, ProviderConfig& provider) {
+    std::string folder=provider.lastFolderId.empty()?"root":provider.lastFolderId;std::vector<std::string> parents;if(folder!="root")parents.push_back("root");size_t selected=0;bool reload=true;std::vector<RemoteEntry> files;std::string next,error;HomeStorageProvider home(activeHttp(),provider);
+    while(appletMainLoop()){
+        if(reload){files.clear();next.clear();if(!home.list(folder,false,"",files,next,error)){title(tr(TextId::HomeStorage));printf("%s\n",error.c_str());waitForButton();return;}selected=0;reload=false;}
+        title(provider.name.c_str());if(files.empty())printf("%s\n",tr(TextId::EmptyFolder));std::vector<ui::Row> rows;for(const auto& file:files)rows.push_back({file.name,file.folder?tr(TextId::Folder):fileSize(file.size),file.folder?ui::Icon::Folder:ui::Icon::File});ui::instance().setRows(std::move(rows),selected);hint(tr(TextId::HomeBrowseHint));
+        hidScanInput();const auto pressed=hidKeysDown(CONTROLLER_P1_AUTO);const int touched=ui::instance().takeRowSelection();if(touched>=0&&static_cast<size_t>(touched)<files.size())selected=static_cast<size_t>(touched);
+        if(pressed&HidNpadButton_B){if(parents.empty())break;folder=parents.back();parents.pop_back();reload=true;continue;}if(files.empty()){consoleUpdate(nullptr);continue;}
+        if(pressed&HidNpadButton_Down){if(selected+1<files.size())++selected;else if(!next.empty()){std::vector<RemoteEntry> page;std::string following;if(!home.list(folder,false,next,page,following,error)){printf("%s\n",error.c_str());waitForButton();return;}files.insert(files.end(),page.begin(),page.end());next=following;if(selected+1<files.size())++selected;}}
+        if(pressed&HidNpadButton_Up)selected=(selected+files.size()-1)%files.size();
+        auto& file=files[selected];
+        if((pressed&HidNpadButton_A)&&file.folder){parents.push_back(folder);folder=file.id;reload=true;}
+        if((pressed&(HidNpadButton_X|HidNpadButton_Y))&&file.canDownload&&!file.folder){downloadFile(store,state,file,(pressed&HidNpadButton_Y)!=0);reload=true;}
+        if((pressed&HidNpadButton_ZL)&&file.canHide){if(confirmHideHome(provider,file))reload=true;}
+        consoleUpdate(nullptr);
+    }
+    provider.lastFolderId=folder;saveOrShow(store,state);
+}
+
+void browse(StateStore& store, State& state);
+void chooseStorageProvider(StateStore& store, State& state) {
+    size_t selected=0;while(appletMainLoop()){title(tr(TextId::StorageProviders));std::vector<ui::Row> rows;for(const auto& p:state.providers)rows.push_back({p.kind==ProviderKind::GoogleDrive?tr(TextId::MyDrive):p.name,p.kind==ProviderKind::GoogleDrive?accountName(state):p.baseUrl,ui::Icon::Cloud});ui::instance().setRows(std::move(rows),selected);hint(tr(TextId::NavigationHint));hidScanInput();const auto pressed=hidKeysDown(CONTROLLER_P1_AUTO);const int touched=ui::instance().takeRowSelection();if(touched>=0&&static_cast<size_t>(touched)<state.providers.size())selected=static_cast<size_t>(touched);if(pressed&HidNpadButton_Down)selected=(selected+1)%state.providers.size();if(pressed&HidNpadButton_Up)selected=(selected+state.providers.size()-1)%state.providers.size();if(pressed&HidNpadButton_B)return;if(pressed&HidNpadButton_A){auto& provider=state.providers[selected];state.activeProviderId=provider.id;if(provider.kind==ProviderKind::GoogleDrive)browse(store,state);else browseHome(store,state,provider);return;}consoleUpdate(nullptr);}
+}
+
 void browse(StateStore& store, State& state) {
     std::string token, error;
     if (!acquireToken(state, token, error)) {
@@ -605,19 +712,19 @@ void browse(StateStore& store, State& state) {
         waitForButton();
         return;
     }
-    DriveClient drive(activeHttp());
+    GoogleStorageProvider drive(activeHttp(), token);
     std::string folder = state.lastFolderId.empty() ? "root" : state.lastFolderId;
     std::vector<std::string> parents;
     bool shared = false;
     size_t selected = 0;
-    std::vector<RemoteFile> files;
+    std::vector<RemoteEntry> files;
     std::string next;
     bool reload = true;
     while (appletMainLoop()) {
         if (reload) {
             files.clear();
             next.clear();
-            if (!drive.list(token, folder, shared, "", files, next, error)) {
+            if (!drive.list(folder, shared, "", files, next, error)) {
                 title(tr(TextId::Files));
                 printf(tr(TextId::DriveError), error.c_str()); printf("\n");
                 waitForButton();
@@ -644,9 +751,9 @@ void browse(StateStore& store, State& state) {
                 if (!files.empty()) {
                     if (selected + 1 < files.size()) { ++selected; refresh = true; }
                     else if (!next.empty()) {
-                        std::vector<RemoteFile> page;
+                        std::vector<RemoteEntry> page;
                         std::string following;
-                        if (!drive.list(token, folder, shared, next, page, following, error)) { title(tr(TextId::Files)); printf(tr(TextId::DriveError), error.c_str()); printf("\n"); waitForButton(); return; }
+                        if (!drive.list(folder, shared, next, page, following, error)) { title(tr(TextId::Files)); printf(tr(TextId::DriveError), error.c_str()); printf("\n"); waitForButton(); return; }
                         files.insert(files.end(), page.begin(), page.end());
                         next = following;
                         if (selected + 1 < files.size()) ++selected;
@@ -823,11 +930,11 @@ int main(int argc, char* argv[]) {
         if (page == 0) {
             ui::instance().setCards({
                 {tr(TextId::ConnectDrive), accountName(state), HidNpadButton_A, ui::Icon::Cloud},
-                {tr(TextId::Files), tr(TextId::MyDrive), HidNpadButton_X, ui::Icon::Folder},
+                {tr(TextId::Files), activeProviderName(state), HidNpadButton_X, ui::Icon::Folder},
                 {tr(TextId::Library), tr(TextId::LibrarySubtitle), HidNpadButton_Y, ui::Icon::Library},
             });
         } else if (page == 1) {
-            ui::instance().setCards({{tr(TextId::MyDrive), accountName(state), HidNpadButton_A, ui::Icon::Folder}});
+            ui::instance().setCards({{tr(TextId::StorageProviders), tr(TextId::FilesSubtitle), HidNpadButton_A, ui::Icon::Folder}});
         } else if (page == 2) {
             char detail[96]{};
             std::snprintf(detail, sizeof(detail), tr(TextId::OpenLibrary), state.library.size());
@@ -837,6 +944,7 @@ int main(int argc, char* argv[]) {
                 {tr(TextId::AutoCleanup), state.deleteAfterInstall ? tr(TextId::Yes) : tr(TextId::No), HidNpadButton_A, ui::Icon::Settings},
                 {tr(TextId::ConnectDrive), accountName(state), HidNpadButton_X, ui::Icon::Cloud},
                 {tr(TextId::Language), std::string(languageName(currentLanguage())), HidNpadButton_Y, ui::Icon::Language},
+                {tr(TextId::HomeStorage), tr(TextId::StorageProviders), HidNpadButton_ZL, ui::Icon::Cloud},
             });
         }
         mainHint(tr(TextId::NavigationHint));
@@ -847,17 +955,18 @@ int main(int argc, char* argv[]) {
         const int touchedTab = ui::instance().takeTabSelection();
         const uint64_t action = ui::instance().takeCardAction();
         if (touchedTab >= 0) { page = touchedTab; continue; }
-        // The UI resolves A to the selected card; X/Y remain direct shortcuts.
+        // The UI resolves A to the selected card; X/Y/ZL remain direct shortcuts.
         // Dispatch exactly one action, then rebuild the main screen after any
         // nested dialog so stale dialog state cannot receive the next input.
         if (page == 0 && action == HidNpadButton_A) connectAccount(store, state);
         else if (page == 0 && action == HidNpadButton_Y) library(store, state);
-        else if (page == 0 && action == HidNpadButton_X) browse(store, state);
-        else if (page == 1 && action == HidNpadButton_A) browse(store, state);
+        else if (page == 0 && action == HidNpadButton_X) chooseStorageProvider(store, state);
+        else if (page == 1 && action == HidNpadButton_A) chooseStorageProvider(store, state);
         else if (page == 2 && action == HidNpadButton_A) library(store, state);
         else if (page == 3 && action == HidNpadButton_A) { state.deleteAfterInstall = !state.deleteAfterInstall; saveOrShow(store, state); }
         else if (page == 3 && action == HidNpadButton_X) connectAccount(store, state);
         else if (page == 3 && action == HidNpadButton_Y) { setLanguage(nextLanguage(currentLanguage())); state.language = languageCode(currentLanguage()); saveOrShow(store, state); }
+        else if (page == 3 && action == HidNpadButton_ZL) configureHomeStorage(store, state);
     }
     curl_global_cleanup();
     if (R_SUCCEEDED(socketResult)) socketExit();

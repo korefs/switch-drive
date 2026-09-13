@@ -294,6 +294,33 @@ void testDownloadRemoval(const fs::path& root) {
 }
 
 int main() {
+    std::string normalized;
+    assert(normalizeHomeStorageUrl("192.168.15.50:8080", normalized) && normalized == "http://192.168.15.50:8080");
+    assert(normalizeHomeStorageUrl("storage.kore.qzz.io", normalized) && normalized == "https://storage.kore.qzz.io");
+    assert(normalizeHomeStorageUrl("https://storage.example:8443", normalized) && normalized == "https://storage.example:8443");
+    assert(!normalizeHomeStorageUrl("https://storage.example/library", normalized));
+    assert(!normalizeHomeStorageUrl("https://user@storage.example", normalized));
+    assert(!normalizeHomeStorageUrl("http://", normalized));
+    assert(!normalizeHomeStorageUrl("192.168.1.500:8080", normalized));
+    std::string providerError;
+    HomeStorageHealth parsedHealth;
+    assert(parseHomeStorageHealthPayload(R"({"service":"switch-drive-home-storage","protocolVersion":1,"instanceId":"abc","name":"Office","httpPort":8080,"authRequired":true})", parsedHealth, providerError));
+    assert(parsedHealth.instanceId == "abc" && parsedHealth.name == "Office" && parsedHealth.authRequired);
+    assert(!parseHomeStorageHealthPayload(R"({"service":"another-service","protocolVersion":1,"instanceId":"abc","name":"Office","httpPort":8080})", parsedHealth, providerError));
+    std::vector<RemoteEntry> parsedCatalog; std::string nextCursor;
+    assert(parseHomeStorageCatalogPayload(R"({"items":[{"id":"opaque-id","parentId":"root","kind":"file","name":"Game.nsp","extension":".nsp","size":"42949672960","modifiedAt":"2026-01-01T00:00:00Z","etag":"\"sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","canDownload":true,"canHide":true}],"nextCursor":"next-page"})", "home-abc", parsedCatalog, nextCursor, providerError));
+    assert(parsedCatalog.size() == 1 && parsedCatalog[0].providerId == "home-abc" && parsedCatalog[0].size == 42949672960ULL && parsedCatalog[0].checksum.kind == ChecksumKind::Sha256 && parsedCatalog[0].canHide && nextCursor == "next-page");
+    std::vector<DiscoveredHomeStorage> discovered{{"http://192.168.1.2:8080", parsedHealth}, {"http://192.168.1.3:8080", parsedHealth}};
+    deduplicateHomeStorageDiscoveries(discovered); assert(discovered.size() == 1);
+    RemoteEntry providerFile; providerFile.id = "opaque-id";
+    GoogleStorageProvider google(HttpClient{}, "google-token");
+    assert(google.capabilities().checksum == ChecksumKind::Md5 && !google.capabilities().catalogManage);
+    assert(google.downloadRequest(providerFile).url.find("opaque-id") != std::string::npos);
+    ProviderConfig homeConfig{"home-test", "Home Storage", "http://192.168.1.2:8080", "home-token", "root", ProviderKind::HomeStorage, true};
+    HomeStorageProvider home(HttpClient{}, homeConfig);
+    const auto homeRequest = home.downloadRequest(providerFile);
+    assert(home.capabilities().checksum == ChecksumKind::Sha256 && home.capabilities().catalogManage && home.capabilities().lanDiscovery);
+    assert(homeRequest.url == "http://192.168.1.2:8080/api/v1/files/opaque-id/content" && homeRequest.headers.size() == 1);
     testHttpActivity();
     testCnmtFileReading();
     const auto placeholderSignature = [](const std::string& value) {
@@ -484,6 +511,7 @@ int main() {
     saved.language = "es-ES";
     Task task;
     task.id = "task1";
+    task.providerId = "google-drive";
     task.accountId = "a1";
     task.remoteId = "r1";
     task.displayName = "large.nsp";
@@ -499,6 +527,7 @@ int main() {
     saved.tasks.push_back(task);
     LibraryItem library;
     library.id = "id1";
+    library.providerId = "google-drive";
     library.accountId = "a1";
     library.remoteId = "r1";
     library.name = "a file.nro";
@@ -508,15 +537,19 @@ int main() {
     library.localState = LocalState::Present;
     library.storageKind = StorageKind::Regular;
     saved.library.push_back(library);
+    saved.providers.push_back({"home-test", "Home Storage", "http://192.168.1.2:8080", "revocable-token", "root", ProviderKind::HomeStorage, true});
     assert(store.save(saved, error));
     saved.sessionToken = "updated-token";
     assert(store.save(saved, error));
     saved.sessionToken = "latest-token";
     assert(store.save(saved, error));
     State loaded = store.load();
-    assert(loaded.schemaVersion == 4 && loaded.language == "es-ES" && loaded.sessionToken == "latest-token" && loaded.tasks.size() == 1 && loaded.library.size() == 1);
-    assert(loaded.tasks[0].committedBytes == task.committedBytes && loaded.tasks[0].storageKind == StorageKind::Concatenated);
+    assert(loaded.schemaVersion == 5 && loaded.language == "es-ES" && loaded.sessionToken == "latest-token" && loaded.tasks.size() == 1 && loaded.library.size() == 1);
+    assert(loaded.tasks[0].providerId == "google-drive" && loaded.tasks[0].committedBytes == task.committedBytes && loaded.tasks[0].storageKind == StorageKind::Concatenated);
     assert(loaded.tasks[0].revision == "42" && loaded.tasks[0].etag == "\"etag\"");
+    assert(loaded.library[0].providerId == "google-drive" && loaded.library[0].md5 == task.md5);
+    const auto homeProvider = std::find_if(loaded.providers.begin(), loaded.providers.end(), [](const ProviderConfig& p){ return p.id == "home-test"; });
+    assert(loaded.providers.size() == 2 && homeProvider != loaded.providers.end() && homeProvider->kind == ProviderKind::HomeStorage && homeProvider->canManageCatalog);
     {
         std::ifstream backup(root / "state-v2" / "state.json.bak");
         const std::string contents((std::istreambuf_iterator<char>(backup)), {});
@@ -527,7 +560,7 @@ int main() {
         languageState.language = language;
         StateStore languageStore(root / (std::string("language-") + language));
         assert(languageStore.save(languageState, error));
-        assert(languageStore.load().schemaVersion == 4 && languageStore.load().language == language);
+        assert(languageStore.load().schemaVersion == 5 && languageStore.load().language == language);
     }
 
     // Existing schema v1 state keeps its catalog entries and adopts regular storage.
@@ -538,17 +571,23 @@ int main() {
         v1 << "{\"schemaVersion\":1,\"serviceUrl\":\"https://drive.test\",\"library\":[{\"id\":\"old\",\"accountId\":\"a\",\"remoteId\":\"r\",\"name\":\"old.nsp\",\"localPath\":\"/tmp/old.nsp\",\"md5\":\"x\"}]}";
     }
     State migrated = StateStore(v1Root).load();
-    assert(migrated.schemaVersion == 4 && migrated.language == "en-US" && migrated.library.size() == 1 && migrated.library[0].storageKind == StorageKind::Regular && migrated.library[0].nspInstallState == NspInstallState::None && migrated.tasks.empty());
+    assert(migrated.schemaVersion == 5 && migrated.activeProviderId == "google-drive" && migrated.providers.size() == 1 && migrated.providers[0].kind == ProviderKind::GoogleDrive && migrated.language == "en-US" && migrated.library.size() == 1 && migrated.library[0].providerId == "google-drive" && migrated.library[0].storageKind == StorageKind::Regular && migrated.library[0].nspInstallState == NspInstallState::None && migrated.tasks.empty());
 
     const auto v2Root = root / "state-v2-migration";
     fs::create_directories(v2Root);
     { std::ofstream v2(v2Root / "state.json"); v2 << "{\"schemaVersion\":2,\"tasks\":[]}"; }
-    assert(StateStore(v2Root).load().schemaVersion == 4 && StateStore(v2Root).load().language == "en-US");
+    assert(StateStore(v2Root).load().schemaVersion == 5 && StateStore(v2Root).load().language == "en-US");
 
     const auto v3Root = root / "state-v3";
     fs::create_directories(v3Root);
     { std::ofstream v3(v3Root / "state.json"); v3 << "{\"schemaVersion\":3}"; }
-    assert(StateStore(v3Root).load().schemaVersion == 4 && StateStore(v3Root).load().language == "en-US");
+    assert(StateStore(v3Root).load().schemaVersion == 5 && StateStore(v3Root).load().language == "en-US");
+    const auto v4Root = root / "state-v4";
+    fs::create_directories(v4Root);
+    { std::ofstream v4(v4Root / "state.json"); v4 << "{\"schemaVersion\":4,\"sessionToken\":\"legacy-session\",\"accounts\":[{\"id\":\"a\",\"email\":\"old@example.test\"}],\"tasks\":[{\"id\":\"t\",\"accountId\":\"a\",\"remoteId\":\"remote\",\"displayName\":\"old.nsp\",\"expectedSize\":1}],\"library\":[{\"id\":\"l\",\"accountId\":\"a\",\"remoteId\":\"remote\",\"name\":\"old.nsp\",\"size\":1}]}"; }
+    const State migratedV4 = StateStore(v4Root).load();
+    assert(migratedV4.schemaVersion == 5 && migratedV4.sessionToken == "legacy-session" && migratedV4.accounts.size() == 1 && migratedV4.tasks.size() == 1 && migratedV4.library.size() == 1);
+    assert(migratedV4.tasks[0].providerId == "google-drive" && migratedV4.library[0].providerId == "google-drive" && migratedV4.providers.size() == 1);
     const auto invalidLanguageRoot = root / "state-invalid-language";
     fs::create_directories(invalidLanguageRoot);
     { std::ofstream invalid(invalidLanguageRoot / "state.json"); invalid << "{\"schemaVersion\":4,\"language\":\"es-es\"}"; }

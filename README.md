@@ -15,12 +15,15 @@ Large-file support requires HOS 4.0.0 or later.
   active account in the current MVP.
 - Browse **My Drive** and **Shared with me**, including nested folders and items
   exposed through shared drives.
-- Download files directly from Google to
+- Add one or more self-hosted **Home Storage** providers, discover them on the
+  local network, and browse a private PC folder through the same download and
+  installation workflow.
+- Download files directly from the selected provider to
   `sd:/switch-drive/downloads/<task-id>/`; file data does not pass through the
   pairing service.
 - Download files of 4 GiB or more as native HOS concatenated files, preserving
   one logical filename on the Switch while avoiding FAT32's per-file limit.
-- Resume an interrupted download only after validating its Drive revision, ETag,
+- Resume an interrupted download only after validating its provider identity, revision, ETag,
   HTTP range, expected size, and checksum metadata; invalid partial data can be
   restarted without appending a full response to it.
 
@@ -69,8 +72,10 @@ immediately and is retained after relaunch.
 - **L/R:** change the main section.
 - **A:** activate the highlighted card, select, or open.
 - **B:** go back; on the main screen, focus the section menu.
-- **X:** download the selected Drive file.
-- **Y:** download and install the selected Drive file.
+- **X:** download the selected remote file.
+- **Y:** download and install the selected remote file.
+- **ZL in Home Storage:** hide the selected catalog entry when the device token
+  has catalog-management permission. This changes only SQLite on the PC.
 - **Y in Library:** delete the downloaded package after confirmation, without
   uninstalling the game or deleting saves. Downloads without a managed installation
   are removed from the list; installed items retain their installation record.
@@ -241,10 +246,18 @@ home network to the Internet. After configuring a custom domain and registering
 `https://<host>/oauth/google/callback` in Google Cloud, deploy it with Wrangler
 and use that public HTTPS origin as `service_url`.
 
+## Run Home Storage
+
+[`home-storage/`](home-storage/README.md) is an independent .NET 10/Docker
+storage provider that exposes a host library folder read-only. It supports LAN
+discovery, optional credentials, an SQLite catalog, and resumable HTTP range
+downloads. It does not replace or depend on the Google Drive pairing service.
+
 ## Security and data handling
 
-The client never stores Google refresh tokens. It stores only a console session
-credential and account IDs in `sd:/switch-drive/state.json`. The server encrypts
+The client never stores Google refresh tokens or a Home Storage password. It
+stores the console session credential, account IDs, and revocable Home Storage
+bearer tokens in `sd:/switch-drive/state.json`. The pairing server encrypts
 refresh tokens using `TOKEN_ENCRYPTION_KEY` before writing them to PostgreSQL.
 Do not commit `.env`, console state, logs, or Google OAuth credentials.
 

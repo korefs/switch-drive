@@ -7,6 +7,16 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <set>
+#ifdef __SWITCH__
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 namespace switchdrive {
 namespace {
@@ -183,6 +193,26 @@ uint64_t integerOrString(json_t* object, const char* key) {
     return 0;
 }
 
+std::string base64(const std::string& input) {
+    static constexpr char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    for (size_t i = 0; i < input.size(); i += 3) {
+        const uint32_t value = (static_cast<unsigned char>(input[i]) << 16) |
+            (i + 1 < input.size() ? static_cast<unsigned char>(input[i + 1]) << 8 : 0) |
+            (i + 2 < input.size() ? static_cast<unsigned char>(input[i + 2]) : 0);
+        out += alphabet[(value >> 18) & 63]; out += alphabet[(value >> 12) & 63];
+        out += i + 1 < input.size() ? alphabet[(value >> 6) & 63] : '=';
+        out += i + 2 < input.size() ? alphabet[value & 63] : '=';
+    }
+    return out;
+}
+
+void setHttpStatusError(long status, std::string& error) {
+    char message[96]{};
+    std::snprintf(message, sizeof(message), i18n::tr(i18n::TextId::HttpRequestFailed), status);
+    error = message;
+}
+
 } // namespace
 
 bool HttpClient::get(const std::string& url, const std::vector<std::string>& headers, Response& out, std::string& error) const {
@@ -207,7 +237,8 @@ bool HttpClient::get(const std::string& url, const std::vector<std::string>& hea
         else error = curl_easy_strerror(result);
         return false;
     }
-    return out.status >= 200 && out.status < 300;
+    if (out.status < 200 || out.status >= 300) { setHttpStatusError(out.status, error); return false; }
+    return true;
 }
 
 bool HttpClient::post(const std::string& url, const std::string& body, const std::vector<std::string>& headers, Response& out, std::string& error) const {
@@ -235,7 +266,21 @@ bool HttpClient::post(const std::string& url, const std::string& body, const std
         else error = curl_easy_strerror(result);
         return false;
     }
-    return out.status >= 200 && out.status < 300;
+    if (out.status < 200 || out.status >= 300) { setHttpStatusError(out.status, error); return false; }
+    return true;
+}
+
+bool HttpClient::del(const std::string& url, const std::vector<std::string>& headers, Response& out, std::string& error) const {
+    CURL* curl = curl_easy_init();
+    if (!curl) { error = i18n::tr(i18n::TextId::CurlUnavailable); return false; }
+    curl_slist* list = nullptr; configure(curl, headers, list, error, &activity_);
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str()); curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, append); curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out.body);
+    const auto result = curl_easy_perform(curl); curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &out.status);
+    curl_slist_free_all(list); curl_easy_cleanup(curl);
+    if (result != CURLE_OK) { error = result == CURLE_ABORTED_BY_CALLBACK ? i18n::tr(i18n::TextId::OperationCancelled) : curl_easy_strerror(result); return false; }
+    if (out.status < 200 || out.status >= 300) { setHttpStatusError(out.status, error); return false; }
+    return true;
 }
 
 bool HttpClient::download(const std::string& url, const std::vector<std::string>& headers, LocalFile& output, uint64_t resumeAt, uint64_t expectedSize, const std::string& ifRange, std::function<bool(const std::string&)> headersAccepted, std::function<bool(uint64_t)> progress, DownloadResult& result, std::string& error) const {
@@ -359,7 +404,7 @@ bool AuthClient::accessToken(const std::string& session, const std::string& acco
     return true;
 }
 
-bool DriveClient::list(const std::string& accessToken, const std::string& folderId, bool sharedWithMe, const std::string& pageToken, std::vector<RemoteFile>& files, std::string& nextPage, std::string& error) const {
+bool DriveClient::list(const std::string& accessToken, const std::string& folderId, bool sharedWithMe, const std::string& pageToken, std::vector<RemoteEntry>& files, std::string& nextPage, std::string& error) const {
     CURL* curl = curl_easy_init();
     if (!curl) {
         error = i18n::tr(i18n::TextId::CurlUnavailable);
@@ -377,9 +422,9 @@ bool DriveClient::list(const std::string& accessToken, const std::string& folder
     json_t* rows = json_object_get(root, "files");
     size_t index; json_t* row;
     json_array_foreach(rows, index, row) {
-        RemoteFile file;
+        RemoteEntry file;
         file.id = str(row, "id"); file.name = str(row, "name"); file.mimeType = str(row, "mimeType");
-        file.size = integerOrString(row, "size"); file.revision = stringOrInteger(row, "version"); file.md5 = str(row, "md5Checksum");
+        file.size = integerOrString(row, "size"); file.revision = stringOrInteger(row, "version"); file.checksum = {ChecksumKind::Md5,str(row, "md5Checksum")};
         file.resourceKey = str(row, "resourceKey"); file.folder = file.mimeType == "application/vnd.google-apps.folder";
         file.shortcut = file.mimeType == "application/vnd.google-apps.shortcut";
         json_t* capabilities = json_object_get(row, "capabilities");
@@ -392,8 +437,70 @@ bool DriveClient::list(const std::string& accessToken, const std::string& folder
     return true;
 }
 
-std::string DriveClient::mediaUrl(const RemoteFile& file) const {
+std::string DriveClient::mediaUrl(const RemoteEntry& file) const {
     return "https://www.googleapis.com/drive/v3/files/" + file.id + "?alt=media" + (file.resourceKey.empty() ? "" : "&resourceKey=" + file.resourceKey);
+}
+
+bool parseHomeStorageHealthPayload(const std::string& payload, HomeStorageHealth& health, std::string& error) {
+    json_t* root = parse(payload, error); if (!root) return false;
+    const bool valid = json_is_object(root) && str(root, "service") == "switch-drive-home-storage";
+    HomeStorageHealth parsed; parsed.instanceId = str(root, "instanceId"); parsed.name = str(root, "name"); parsed.protocolVersion = static_cast<int>(integerOrString(root, "protocolVersion")); parsed.httpPort = static_cast<int>(integerOrString(root, "httpPort")); parsed.authRequired = json_is_true(json_object_get(root, "authRequired")); json_decref(root);
+    if (!valid || parsed.protocolVersion != 1 || parsed.instanceId.empty() || parsed.name.empty() || parsed.httpPort < 1 || parsed.httpPort > 65535) { error = i18n::tr(i18n::TextId::InvalidServiceJson); return false; }
+    health = std::move(parsed); return true;
+}
+
+bool parseHomeStorageCatalogPayload(const std::string& payload, const std::string& providerId, std::vector<RemoteEntry>& files, std::string& next, std::string& error) {
+    json_t* root = parse(payload, error); if (!root) return false;
+    json_t* rows = json_object_get(root, "items");
+    if (!json_is_object(root) || !json_is_array(rows)) { json_decref(root); error = i18n::tr(i18n::TextId::InvalidServiceJson); return false; }
+    std::vector<RemoteEntry> parsed; const auto nextCursor = str(root, "nextCursor"); size_t index; json_t* row;
+    json_array_foreach(rows, index, row) {
+        RemoteEntry file; file.id = str(row, "id"); file.providerId = providerId; file.name = str(row, "name"); file.mimeType = str(row, "kind"); file.folder = file.mimeType == "folder"; file.size = integerOrString(row, "size"); file.revision = str(row, "etag"); file.etag = file.revision; file.checksum = {ChecksumKind::Sha256, str(row, "sha256")}; file.canDownload = json_is_true(json_object_get(row, "canDownload")); file.canHide = json_is_true(json_object_get(row, "canHide"));
+        if (!json_is_object(row) || file.id.empty() || file.name.empty() || (file.mimeType != "folder" && file.mimeType != "file") || (!file.folder && (file.etag.empty() || file.checksum.value.size() != 64))) { json_decref(root); error = i18n::tr(i18n::TextId::InvalidServiceJson); return false; }
+        parsed.push_back(std::move(file));
+    }
+    json_decref(root); files.insert(files.end(), std::make_move_iterator(parsed.begin()), std::make_move_iterator(parsed.end())); next = nextCursor; return true;
+}
+
+void deduplicateHomeStorageDiscoveries(std::vector<DiscoveredHomeStorage>& results) {
+    std::set<std::string> seen;
+    results.erase(std::remove_if(results.begin(), results.end(), [&](const DiscoveredHomeStorage& item) { return item.health.instanceId.empty() || item.health.protocolVersion != 1 || !seen.insert(item.health.instanceId).second; }), results.end());
+}
+
+bool HomeStorageClient::health(const std::string& baseUrl, HomeStorageHealth& health, std::string& error) const {
+    HttpClient::Response response; if (!http_.get(baseUrl + "/drive-health", {}, response, error)) return false;
+    return parseHomeStorageHealthPayload(response.body, health, error);
+}
+
+bool HomeStorageClient::authenticate(const std::string& baseUrl, const std::string& username, const std::string& password, std::string& token, bool& canManage, std::string& error) const {
+    HttpClient::Response response; if (!http_.post(baseUrl + "/api/v1/auth/token", "", {"Authorization: Basic " + base64(username + ":" + password)}, response, error)) return false;
+    json_t* root = parse(response.body, error); if (!root) return false; token = str(root, "accessToken");canManage=false;json_t* scopes=json_object_get(root,"scopes");size_t index;json_t* scope;json_array_foreach(scopes,index,scope)if(json_is_string(scope)&&std::string(json_string_value(scope))=="catalog:manage")canManage=true;json_decref(root); return !token.empty();
+}
+
+bool HomeStorageClient::list(const ProviderConfig& provider, const std::string& folderId, const std::string& cursor, std::vector<RemoteEntry>& files, std::string& next, std::string& error) const {
+    std::string url = provider.baseUrl + "/api/v1/catalog?parentId=" + (folderId.empty() ? "root" : folderId); if (!cursor.empty()) url += "&cursor=" + cursor;
+    std::vector<std::string> headers; if (!provider.accessToken.empty()) headers.push_back("Authorization: Bearer " + provider.accessToken);
+    HttpClient::Response response; if (!http_.get(url, headers, response, error)) return false; return parseHomeStorageCatalogPayload(response.body, provider.id, files, next, error);
+}
+
+bool HomeStorageClient::hide(const ProviderConfig& provider, const std::string& id, std::string& error) const { HttpClient::Response response; return http_.del(provider.baseUrl + "/api/v1/catalog/" + id,{"Authorization: Bearer " + provider.accessToken},response,error); }
+std::string HomeStorageClient::mediaUrl(const ProviderConfig& provider, const RemoteEntry& file) const { return provider.baseUrl + "/api/v1/files/" + file.id + "/content"; }
+
+bool GoogleStorageProvider::list(const std::string& folder, bool shared, const std::string& cursor, std::vector<RemoteEntry>& files, std::string& next, std::string& error) const { const size_t begin=files.size();if(!drive_.list(token_,folder,shared,cursor,files,next,error))return false;for(size_t i=begin;i<files.size();++i)files[i].providerId="google-drive";return true; }
+DownloadRequest GoogleStorageProvider::downloadRequest(const RemoteEntry& file) const { return {drive_.mediaUrl(file),token_.empty()?std::vector<std::string>{}:std::vector<std::string>{"Authorization: Bearer "+token_}}; }
+bool HomeStorageProvider::list(const std::string& folder, bool, const std::string& cursor, std::vector<RemoteEntry>& files, std::string& next, std::string& error) const { return home_.list(config_,folder,cursor,files,next,error); }
+DownloadRequest HomeStorageProvider::downloadRequest(const RemoteEntry& file) const { return {home_.mediaUrl(config_,file),config_.accessToken.empty()?std::vector<std::string>{}:std::vector<std::string>{"Authorization: Bearer "+config_.accessToken}}; }
+
+bool discoverHomeStorage(std::vector<DiscoveredHomeStorage>& results, std::string& error) {
+#ifdef __SWITCH__
+    const int socketFd = socket(AF_INET, SOCK_DGRAM, 0); if (socketFd < 0) { error = i18n::tr(i18n::TextId::NoStorageFound); return false; }
+    int enabled=1;setsockopt(socketFd,SOL_SOCKET,SO_BROADCAST,&enabled,sizeof(enabled));fcntl(socketFd,F_SETFL,O_NONBLOCK);
+    sockaddr_in target{};target.sin_family=AF_INET;target.sin_port=htons(8080);target.sin_addr.s_addr=INADDR_BROADCAST;const char probe[]="SWITCHDRIVE_HOME_DISCOVER_V1";sendto(socketFd,probe,sizeof(probe)-1,0,reinterpret_cast<sockaddr*>(&target),sizeof(target));
+    const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(3);std::array<char,2048> buffer{};
+    while(std::chrono::steady_clock::now()<end){sockaddr_in source{};socklen_t length=sizeof(source);const auto size=recvfrom(socketFd,buffer.data(),buffer.size()-1,0,reinterpret_cast<sockaddr*>(&source),&length);if(size<=0){usleep(50000);continue;}buffer[size]=0;HomeStorageHealth health;std::string parseError;if(parseHomeStorageHealthPayload(std::string(buffer.data(),size),health,parseError)){char address[INET_ADDRSTRLEN]{};inet_ntop(AF_INET,&source.sin_addr,address,sizeof(address));results.push_back({std::string("http://")+address+":"+std::to_string(health.httpPort),health});}}close(socketFd);deduplicateHomeStorageDiscoveries(results);return true;
+#else
+    (void)results; error = i18n::tr(i18n::TextId::NoStorageFound); return false;
+#endif
 }
 
 } // namespace switchdrive
