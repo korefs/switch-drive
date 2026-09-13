@@ -89,7 +89,7 @@ cmake --build build/preview
 SWITCHDRIVE_PREVIEW_FONT=/caminho/para/fonte.ttf ctest --test-dir build/preview --output-on-failure
 ```
 
-Pendente em hardware: substituir o NRO, confirmar `Versão 0.2.5`, abrir por
+Pendente em hardware: substituir o NRO, confirmar `Versão 0.2.6`, abrir por
 Sphaira → Switch Drive, navegar com Joy-Cons já conectados e sair com +.
 Repetir em applet e title override, incluindo desconexão/reconexão.
 Se ainda falhar, preservar `sd:/switch-drive/boot.log`: `video: frame=2 before

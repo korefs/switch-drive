@@ -238,7 +238,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("Controller ready", "Controle conectado", "Control conectado") \
  X("Connect a controller", "Conecte um controle", "Conecta un control") \
  X("Waiting for input focus", "Aguardando foco de controle", "Esperando el foco de control") \
- X("Version 0.2.5", "Versão 0.2.5", "Versión 0.2.5") \
+ X("Version 0.2.6", "Versão 0.2.6", "Versión 0.2.6") \
  X("Preparing download…", "Preparando download…", "Preparando descarga…") \
  X("Verifying downloaded file…", "Verificando arquivo baixado…", "Verificando archivo descargado…") \
  X("B: pause download", "B: pausar download", "B: pausar descarga") \

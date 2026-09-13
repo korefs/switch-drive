@@ -4,8 +4,8 @@ BUILD := build
 SOURCES := switch/source
 INCLUDES := switch/include
 APP_TITLE := Switch Drive
-APP_AUTHOR := Switch Drive contributors
-APP_VERSION := 0.2.5
+APP_AUTHOR := kore
+APP_VERSION := 0.2.6
 ICON := icon.jpg
 ROMFS := romfs
 

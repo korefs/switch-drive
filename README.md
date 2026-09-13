@@ -179,7 +179,7 @@ game) for NSP operations. The graphical browser does not require title override.
 
 ### Startup and Sphaira
 
-Version 0.2.5 uses two video buffers. With only one, the compositor can retain
+Version 0.2.6 uses two video buffers. With only one, the compositor can retain
 the displayed frame while the app waits for a free buffer to draw the next
 one, stopping input polling as well. The old first frame displayed
 `Connect a controller` before polling input, so that frozen message did not
