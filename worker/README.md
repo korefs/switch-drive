@@ -10,8 +10,6 @@ a Durable Object to rate-limit requests by client IP.
    not expose the laptop's Docker database directly to the Internet.
 2. Create a Cloudflare Hyperdrive binding named `HYPERDRIVE` for that database:
 
-postgresql://neondb_owner:npg_CRs71itPHKGI@ep-jolly-snow-ayp0xxgw-pooler.c-5.us-east-2.aws.neon.tech/switch_drive?sslmode=require&channel_binding=require
-
    ```sh
    npx wrangler hyperdrive create switch-drive-db --connection-string='postgres://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require'
    ```
