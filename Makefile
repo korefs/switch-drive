@@ -14,7 +14,7 @@ PKG_CONFIG := $(DEVKITPRO)/portlibs/switch/bin/aarch64-none-elf-pkg-config
 CFLAGS := `$(PKG_CONFIG) --cflags sdl2 SDL2_ttf` -g -Wall -Wextra -O2 -ffunction-sections $(ARCH)
 CXXFLAGS := $(CFLAGS) -std=gnu++20 -fno-rtti -fno-exceptions
 LDFLAGS := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
-LIBS := -lcurl -ljansson -lmbedcrypto -lz `$(PKG_CONFIG) --libs sdl2 SDL2_ttf` -lnx
+LIBS := -lcurl -ljansson -lmbedcrypto -lzstd -lz `$(PKG_CONFIG) --libs sdl2 SDL2_ttf` -lnx
 LIBDIRS := $(PORTLIBS) $(LIBNX)
 
 include $(DEVKITPRO)/libnx/switch_rules

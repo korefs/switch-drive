@@ -248,6 +248,8 @@ std::string extensionOf(const std::string& name) {
 
 bool isNro(const std::string& name) { return extensionOf(name) == ".nro"; }
 bool isNsp(const std::string& name) { return extensionOf(name) == ".nsp"; }
+bool isNsz(const std::string& name) { return extensionOf(name) == ".nsz"; }
+bool isInstallablePackage(const std::string& name) { return isNsp(name) || isNsz(name); }
 
 std::string makeId() {
     static std::mt19937_64 engine{static_cast<uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count())};
@@ -856,15 +858,15 @@ struct Pfs0RawEntry { uint64_t offset, size; uint32_t stringOffset, reserved; };
 bool Pfs0::open(const fs::path& path, StorageKind kind, std::string& error, uint64_t segmentSize) {
     valid_ = false;
     entries_.clear();
+    input_.close();
     path_ = path;
     kind_ = kind;
     segmentSize_ = segmentSize;
-    LocalFile input;
-    if (!input.open(path, kind, false, error, segmentSize)) return false;
+    if (!input_.open(path, kind, false, error, segmentSize)) return false;
     uint64_t total{};
-    if (!input.size(total, error)) return false;
+    if (!input_.size(total, error)) return false;
     Pfs0Header header{};
-    if (!input.readAt(0, &header, sizeof(header), error) || std::string(header.magic, 4) != "PFS0" || header.fileCount == 0 || header.fileCount > 4096 || header.stringTableSize > 4 * 1024 * 1024) {
+    if (!input_.readAt(0, &header, sizeof(header), error) || std::string(header.magic, 4) != "PFS0" || header.fileCount == 0 || header.fileCount > 4096 || header.stringTableSize > 4 * 1024 * 1024) {
         error = i18n::tr(i18n::TextId::Pfs0InvalidHeader);
         return false;
     }
@@ -876,7 +878,7 @@ bool Pfs0::open(const fs::path& path, StorageKind kind, std::string& error, uint
     }
     std::vector<Pfs0RawEntry> raw(header.fileCount);
     std::string strings(header.stringTableSize, '\0');
-    if (!input.readAt(sizeof(header), raw.data(), static_cast<size_t>(rawSize), error) || !input.readAt(sizeof(header) + rawSize, strings.data(), strings.size(), error)) {
+    if (!input_.readAt(sizeof(header), raw.data(), static_cast<size_t>(rawSize), error) || !input_.readAt(sizeof(header) + rawSize, strings.data(), strings.size(), error)) {
         error = i18n::tr(i18n::TextId::Pfs0InvalidData);
         return false;
     }
@@ -906,8 +908,7 @@ const Pfs0Entry* Pfs0::find(const std::string& name) const {
 
 bool Pfs0::read(const Pfs0Entry& entry, uint64_t offset, void* buffer, size_t size, std::string& error) const {
     if (!valid_ || offset > entry.size || size > entry.size - offset) { error = i18n::tr(i18n::TextId::Pfs0ReadOutOfBounds); return false; }
-    LocalFile input;
-    return input.open(path_, kind_, false, error, segmentSize_) && input.readAt(entry.offset + offset, buffer, size, error);
+    return input_.readAt(entry.offset + offset, buffer, size, error);
 }
 
 } // namespace switchdrive

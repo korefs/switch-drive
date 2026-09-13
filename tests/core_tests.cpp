@@ -12,6 +12,8 @@
 #include <iostream>
 #include <vector>
 
+#include <zstd.h>
+
 namespace fs = std::filesystem;
 using namespace switchdrive;
 using namespace switchdrive::i18n;
@@ -20,6 +22,105 @@ using namespace switchdrive::i18n;
 struct Header { char magic[4]; uint32_t count, strings, reserved; };
 struct Entry { uint64_t offset, size; uint32_t nameOffset, reserved; };
 #pragma pack(pop)
+
+void appendLe32(std::vector<uint8_t>& output, uint32_t value) {
+    for (unsigned i = 0; i < 4; ++i) output.push_back(static_cast<uint8_t>(value >> (i * 8)));
+}
+
+void appendLe64(std::vector<uint8_t>& output, uint64_t value) {
+    for (unsigned i = 0; i < 8; ++i) output.push_back(static_cast<uint8_t>(value >> (i * 8)));
+}
+
+std::vector<uint8_t> makeNcz(bool blockCompressed, std::vector<uint8_t>& expected) {
+    constexpr size_t headerSize = 0x4000;
+    constexpr size_t blockSize = 0x4000;
+    expected.resize(headerSize + 25000);
+    for (size_t i = 0; i < headerSize; ++i) expected[i] = static_cast<uint8_t>((i * 17) & 0xff);
+    for (size_t i = headerSize; i < expected.size(); ++i) expected[i] = static_cast<uint8_t>((i / 97) & 7);
+    std::vector<uint8_t> ncz(expected.begin(), expected.begin() + headerSize);
+    ncz.insert(ncz.end(), {'N','C','Z','S','E','C','T','N'});
+    appendLe64(ncz, 1);
+    appendLe64(ncz, headerSize);
+    appendLe64(ncz, expected.size() - headerSize);
+    appendLe64(ncz, 1);
+    appendLe64(ncz, 0);
+    ncz.insert(ncz.end(), 32, 0);
+    if (!blockCompressed) {
+        const size_t bound = ZSTD_compressBound(expected.size() - headerSize);
+        const size_t start = ncz.size();
+        ncz.resize(start + bound);
+        const size_t compressed = ZSTD_compress(ncz.data() + start, bound, expected.data() + headerSize, expected.size() - headerSize, 3);
+        assert(!ZSTD_isError(compressed));
+        ncz.resize(start + compressed);
+        return ncz;
+    }
+    ncz.insert(ncz.end(), {'N','C','Z','B','L','O','C','K'});
+    ncz.push_back(2); ncz.push_back(1); ncz.push_back(0); ncz.push_back(14);
+    const uint32_t count = static_cast<uint32_t>((expected.size() - headerSize + blockSize - 1) / blockSize);
+    appendLe32(ncz, count);
+    appendLe64(ncz, expected.size() - headerSize);
+    std::vector<std::vector<uint8_t>> blocks;
+    for (uint32_t i = 0; i < count; ++i) {
+        const size_t offset = headerSize + static_cast<size_t>(i) * blockSize;
+        const size_t amount = std::min(blockSize, expected.size() - offset);
+        if (i + 1 == count) {
+            blocks.emplace_back(expected.begin() + offset, expected.begin() + offset + amount);
+        } else {
+            std::vector<uint8_t> compressed(ZSTD_compressBound(amount));
+            const size_t size = ZSTD_compress(compressed.data(), compressed.size(), expected.data() + offset, amount, 3);
+            assert(!ZSTD_isError(size) && size < amount);
+            compressed.resize(size);
+            blocks.push_back(std::move(compressed));
+        }
+    }
+    for (const auto& block : blocks) appendLe32(ncz, static_cast<uint32_t>(block.size()));
+    for (const auto& block : blocks) ncz.insert(ncz.end(), block.begin(), block.end());
+    return ncz;
+}
+
+std::vector<uint8_t> makeEncryptedNcz(std::vector<uint8_t>& expected) {
+    constexpr size_t headerSize = 0x4000;
+    const std::string cipherHex = "8ab827718b97f74b4631898816ea310761948e92d1d1c210dd86ac6248636c8b1ac584d623ba7e2a995a783362024e19e179dcc34145a0d0cc9a572ab29b7300";
+    expected.assign(headerSize + cipherHex.size() / 2, 0);
+    const auto nibble = [](char value) { return static_cast<uint8_t>(value <= '9' ? value - '0' : value - 'a' + 10); };
+    for (size_t i = 0; i < cipherHex.size() / 2; ++i) expected[headerSize + i] = static_cast<uint8_t>((nibble(cipherHex[i * 2]) << 4) | nibble(cipherHex[i * 2 + 1]));
+    std::vector<uint8_t> ncz(headerSize, 0);
+    ncz.insert(ncz.end(), {'N','C','Z','S','E','C','T','N'});
+    appendLe64(ncz, 1);
+    appendLe64(ncz, headerSize);
+    appendLe64(ncz, cipherHex.size() / 2);
+    appendLe64(ncz, 3);
+    appendLe64(ncz, 0);
+    for (uint8_t i = 0; i < 16; ++i) ncz.push_back(i);
+    for (uint8_t i = 0; i < 16; ++i) ncz.push_back(static_cast<uint8_t>(0xa0 + i));
+    std::array<uint8_t, 64> plain{};
+    for (uint8_t i = 0; i < plain.size(); ++i) plain[i] = i;
+    std::vector<uint8_t> compressed(ZSTD_compressBound(plain.size()));
+    const size_t size = ZSTD_compress(compressed.data(), compressed.size(), plain.data(), plain.size(), 3);
+    assert(!ZSTD_isError(size));
+    ncz.insert(ncz.end(), compressed.begin(), compressed.begin() + size);
+    return ncz;
+}
+
+std::vector<uint8_t> makePfs(const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files) {
+    std::string names;
+    std::vector<Entry> entries;
+    uint64_t dataOffset{};
+    for (const auto& [name, data] : files) {
+        entries.push_back({dataOffset, data.size(), static_cast<uint32_t>(names.size()), 0});
+        names += name;
+        names.push_back('\0');
+        dataOffset += data.size();
+    }
+    Header header{{'P', 'F', 'S', '0'}, static_cast<uint32_t>(files.size()), static_cast<uint32_t>(names.size()), 0};
+    std::vector<uint8_t> pfs(sizeof(header) + entries.size() * sizeof(Entry) + names.size());
+    size_t cursor{};
+    std::memcpy(pfs.data() + cursor, &header, sizeof(header)); cursor += sizeof(header);
+    std::memcpy(pfs.data() + cursor, entries.data(), entries.size() * sizeof(Entry)); cursor += entries.size() * sizeof(Entry);
+    std::memcpy(pfs.data() + cursor, names.data(), names.size());
+    for (const auto& [name, data] : files) { (void)name; pfs.insert(pfs.end(), data.begin(), data.end()); }
+    return pfs;
+}
 
 int main() {
     const auto placeholderSignature = [](const std::string& value) {
@@ -151,6 +252,7 @@ int main() {
     assert(sanitizeFileName("../Mario Kart: 8.nsp") == "..Mario_Kart_8.nsp");
     assert(extensionOf("DEMO.NRO") == ".nro");
     assert(isNsp("x.nsp") && !isNsp("x.nsz"));
+    assert(isNsz("x.NSZ") && isInstallablePackage("x.nsp") && isInstallablePackage("x.nsz") && !isInstallablePackage("x.xci"));
     assert(storageKindForSize(kFat32FileLimit - 1) == StorageKind::Regular);
     assert(storageKindForSize(kFat32FileLimit) == StorageKind::Concatenated);
     assert(storageKindForSize(kFat32FileLimit + 1) == StorageKind::Concatenated);
@@ -333,6 +435,60 @@ int main() {
     assert(parser.entries().size() == 2 && parser.entries()[0].name == "a.cnmt.nca");
     NspInstaller nsp;
     assert(nsp.validate(pfsPath, StorageKind::Concatenated, error, 16));
+
+    // NSZ content is reconstructed in memory-sized chunks. Cover both the
+    // default solid stream and NCZBLOCK, including a raw final block.
+    for (const bool blockCompressed : {false, true}) {
+        std::vector<uint8_t> expected;
+        const auto ncz = makeNcz(blockCompressed, expected);
+        const auto nsz = makePfs({{"content.ncz", ncz}, {"meta.cnmt.nca", {'c','n','m','t'}}});
+        const auto nszPath = root / (blockCompressed ? "block.nsz" : "solid.nsz");
+        LocalFile nszFile;
+        assert(nszFile.create(nszPath, StorageKind::Regular, error));
+        assert(nszFile.writeAt(0, nsz.data(), nsz.size(), error));
+        assert(nszFile.flush(error));
+        nszFile.close();
+        Pfs0 nszParser;
+        assert(nszParser.open(nszPath, error));
+        assert(nsp.validate(nszPath, error));
+        const auto* compressed = nszParser.find("content.ncz");
+        assert(compressed);
+        uint64_t decompressedSize{};
+        assert(inspectNcz(nszParser, *compressed, decompressedSize, error));
+        assert(decompressedSize == expected.size());
+        std::vector<uint8_t> restored(expected.size());
+        uint64_t nextOffset{};
+        assert(streamNcz(nszParser, *compressed, [&](uint64_t offset, const void* data, size_t size, std::string&) {
+            assert(offset == nextOffset && offset + size <= restored.size());
+            std::memcpy(restored.data() + offset, data, size);
+            nextOffset += size;
+            return true;
+        }, error));
+        assert(nextOffset == expected.size() && restored == expected);
+    }
+    {
+        // The expected cipher text was independently generated with OpenSSL
+        // AES-128-CTR using the NCZ absolute-offset counter convention.
+        std::vector<uint8_t> expected;
+        const auto ncz = makeEncryptedNcz(expected);
+        const auto nsz = makePfs({{"encrypted.ncz", ncz}, {"meta.cnmt.nca", {'c','n','m','t'}}});
+        const auto nszPath = root / "encrypted.nsz";
+        LocalFile nszFile;
+        assert(nszFile.create(nszPath, StorageKind::Regular, error));
+        assert(nszFile.writeAt(0, nsz.data(), nsz.size(), error));
+        assert(nszFile.flush(error));
+        nszFile.close();
+        Pfs0 nszParser;
+        assert(nszParser.open(nszPath, error));
+        const auto* compressed = nszParser.find("encrypted.ncz");
+        assert(compressed);
+        std::vector<uint8_t> restored(expected.size());
+        assert(streamNcz(nszParser, *compressed, [&](uint64_t offset, const void* data, size_t size, std::string&) {
+            std::memcpy(restored.data() + offset, data, size);
+            return true;
+        }, error));
+        assert(restored == expected);
+    }
 
     // CNMT parsing is host-testable even though opening an encrypted CNMT NCA is Switch-only.
     struct RawHeader { uint64_t id; uint32_t version; uint8_t type, platform; uint16_t ext, count, metaCount; uint8_t attributes, storage, installType, committed; uint32_t required; uint8_t reserved[4]; } __attribute__((packed));

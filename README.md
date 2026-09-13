@@ -56,8 +56,9 @@ immediately and is retained after relaunch.
 | File type                               | Download |     Install | Current state                                                                            |
 | --------------------------------------- | -------: | ----------: | ---------------------------------------------------------------------------------------- |
 | `.nro`                                  |      Yes |         Yes | Standalone homebrew is supported                                                         |
-| `.nsp`                                  |      Yes |         Yes | Installs one base game, update, or DLC through the Goldleaf-derived NCM adapter |
-| `.xci`, `.nsz`, `.zip`, and other files |      Yes |          No | Stored as regular downloads                                                              |
+| `.nsp`                                  |      Yes |         Yes | Installs one base game, update, or DLC through the Goldleaf-derived NCM adapter           |
+| `.nsz`                                  |      Yes |         Yes | Streams solid or block-compressed NCZ content directly into NCM without an intermediate NSP |
+| `.xci`, `.zip`, and other files         |      Yes |          No | Stored as regular downloads                                                              |
 | Native Google documents                 |       No |          No | Metadata can be listed; export is planned                                                |
 
 ### Controls
@@ -78,7 +79,7 @@ immediately and is retained after relaunch.
   tap the selected row again to open/check it. Swipe to scroll. The footer
   shows controller shortcuts for downloading, installing, and going back.
 
-Launch from a title override (hold **R** while opening a game) for NSP actions.
+Launch from a title override (hold **R** while opening a game) for NSP/NSZ actions.
 When opened as an applet, Switch Drive keeps the UI and actions available but
 shows a persistent warning; any unavailable NCM operation is reported in the
 app instead of closing it.
@@ -87,7 +88,7 @@ app instead of closing it.
 
 This repository contains an early MVP: the Switch client, the OAuth pairing
 service, Docker deployment files, and host tests for the local state model and
-PFS0 parser. NRO and transactional NSP installation are implemented. NSP
+PFS0 parser. NRO and transactional NSP/NSZ installation are implemented. Package
 installation requires an Atmosphère console launched in application mode. A real
 console and a private Google Cloud OAuth client are required for final
 acceptance testing.
@@ -96,8 +97,8 @@ acceptance testing.
 
 ### Next priorities
 
-1. **Complete NSP installation and removal:** done for one base game, update,
-   or DLC per NSP, with managed component removal and interrupted-install
+1. **Complete NSP/NSZ installation and removal:** done for one base game, update,
+   or DLC per package, with managed component removal and interrupted-install
    recovery. Full package signature verification remains planned below.
 2. **Show a QR code on the Switch:** keep the short URL and pairing code as a
    fallback, while allowing the user to scan and authenticate immediately from
@@ -159,7 +160,7 @@ acceptance testing.
 
 ## Build the Switch client
 
-Install devkitPro's `switch-dev`, `switch-curl`, `switch-mbedtls`,
+Install devkitPro's `switch-dev`, `switch-curl`, `switch-mbedtls`, `switch-zstd`,
 `switch-jansson`, `switch-sdl2`, and `switch-sdl2_ttf`
 packages, then run:
 
@@ -244,11 +245,15 @@ Do not commit `.env`, console state, logs, or Google OAuth credentials.
 
 ## Attribution
 
-The planned NSP installation adapter follows the NCM installation approach from
+The NSP/NSZ installation adapter follows the NCM installation approach from
 [Goldleaf](https://github.com/XorTroll/Goldleaf), GPL-3.0. The pinned upstream
 source is kept under `third_party/Goldleaf`, and the integration boundary is in
 `switch/source/installer.cpp`. Goldleaf's license and notices must remain with
 redistributed source and binaries that incorporate its code.
+
+The streaming NCZ reader implements the public
+[NSZ/NCZ format](https://github.com/nicoboss/nsz/blob/master/docs/formats.md)
+using zstd and AES-CTR; it does not bundle console keys or copyrighted content.
 
 ## NSP safety
 
@@ -260,7 +265,7 @@ An `install-journal.json` is recovered on the next launch if the app is
 interrupted. Managed removal removes only that component and never calls
 save-data deletion APIs.
 
-Install only trusted packages. NSP installation requires Atmosphère and any
+Install only trusted packages. NSP/NSZ installation requires Atmosphère and any
 appropriate FS patches; execute Switch Drive by holding R while launching a
 game, not as a restricted applet.
 

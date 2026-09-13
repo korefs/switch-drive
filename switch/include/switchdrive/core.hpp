@@ -97,6 +97,8 @@ std::string sanitizeFileName(const std::string& name);
 std::string extensionOf(const std::string& name);
 bool isNro(const std::string& name);
 bool isNsp(const std::string& name);
+bool isNsz(const std::string& name);
+bool isInstallablePackage(const std::string& name);
 std::string makeId();
 bool fileExists(const std::string& path);
 uint64_t fileSize(const std::string& path);
@@ -176,7 +178,12 @@ class Pfs0 {
     std::filesystem::path path_;
     StorageKind kind_{StorageKind::Regular};
     uint64_t segmentSize_{kFat32FileLimit};
+    mutable LocalFile input_;
 };
+
+using NczSink = std::function<bool(uint64_t, const void*, size_t, std::string&)>;
+bool inspectNcz(const Pfs0& pfs0, const Pfs0Entry& entry, uint64_t& decompressedSize, std::string& error);
+bool streamNcz(const Pfs0& pfs0, const Pfs0Entry& entry, const NczSink& sink, std::string& error);
 
 class NroInstaller {
   public:

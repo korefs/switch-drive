@@ -60,7 +60,7 @@ bool NspInstaller::validate(const fs::path& source, StorageKind kind, std::strin
     Pfs0 pfs0; if (!pfs0.open(source, kind, error, segmentSize)) return false;
     size_t metadataCount = 0; bool hasNca = false;
     for (const auto& entry : pfs0.entries()) {
-        if (extensionOf(entry.name) == ".nca") hasNca = true;
+        if (extensionOf(entry.name) == ".nca" || extensionOf(entry.name) == ".ncz") hasNca = true;
         if (entry.name.ends_with(".cnmt.nca")) ++metadataCount;
     }
     if (!hasNca || metadataCount != 1) { error = i18n::tr(metadataCount > 1 ? i18n::TextId::NspAmbiguous : i18n::TextId::NspMissingContents); return false; }
@@ -99,7 +99,14 @@ bool hexToBytes(const std::string& value, uint8_t* output, size_t size) {
     return true;
 }
 uint64_t contentSize(const ContentInfoRaw& content) { return (static_cast<uint64_t>(content.sizeHigh) << 32) | content.sizeLow; }
-bool isNcaFileName(const std::string& name, const std::string& id, bool meta) { return name == id + (meta ? ".cnmt.nca" : ".nca"); }
+const Pfs0Entry* findContentEntry(const Pfs0& pfs0, const std::string& id, bool meta, bool& compressed) {
+    compressed = false;
+    if (const auto* entry = pfs0.find(id + (meta ? ".cnmt.nca" : ".nca"))) return entry;
+    if (!meta) {
+        if (const auto* entry = pfs0.find(id + ".ncz")) { compressed = true; return entry; }
+    }
+    return nullptr;
+}
 #ifdef __SWITCH__
 struct ApplicationRecordMeta {
     NcmContentMetaKey key;
@@ -248,19 +255,27 @@ bool NspInstaller::inspect(const fs::path& source, StorageKind kind, NspPackageI
     const Pfs0Entry* meta = nullptr;
     for (const auto& entry : pfs0.entries()) if (entry.name.ends_with(".cnmt.nca")) meta = &entry;
     if (!meta) { error = i18n::tr(i18n::TextId::CnmtMissing); return false; }
+    constexpr size_t metaSuffixSize = sizeof(".cnmt.nca") - 1;
+    std::array<uint8_t, 16> metaIdBytes{};
+    if (meta->name.size() != metaIdBytes.size() * 2 + metaSuffixSize || !hexToBytes(meta->name.substr(0, metaIdBytes.size() * 2), metaIdBytes.data(), metaIdBytes.size())) {
+        error = i18n::tr(i18n::TextId::InvalidNcaId); return false;
+    }
 #ifndef __SWITCH__
     (void)pfs0; (void)meta;
     error = i18n::tr(i18n::TextId::CnmtSwitchOnly);
     return false;
 #else
-    // Goldleaf mounts the CNMT NCA through FS after staging it in SystemContent.
-    // The dedicated temporary filename prevents package metadata from being mixed.
-    FsFileSystem systemFs{};
-    Result rc = fsOpenBisFileSystem(&systemFs, FsBisPartitionId_System, "");
-    if (R_FAILED(rc) || fsdevMountDevice("swd-system", systemFs) != 0) { error = i18n::tr(i18n::TextId::SystemContentMountFailed); return false; }
-    const fs::path temporary = "swd-system:/Contents/switch-drive-cnmt.nca";
+    // ContentMeta must be opened through an FS content path. Stage only this
+    // package's CNMT under the microSD content root; homebrew normally cannot
+    // mount the internal SystemContent BIS partition directly.
+    constexpr const char* temporaryDirectory = "sdmc:/Nintendo/Contents/switch-drive-temp";
+    std::error_code directoryError;
+    fs::create_directories(temporaryDirectory, directoryError);
+    if (directoryError) { error = i18n::tr(i18n::TextId::CnmtTempDirectoryFailed); return false; }
+    const fs::path temporary = fs::path(temporaryDirectory) / meta->name;
+    const auto cleanupTemporary = [&]() { std::remove(temporary.string().c_str()); fsdevCommitDevice("sdmc"); };
     std::FILE* output = std::fopen(temporary.string().c_str(), "wb");
-    if (!output) { fsdevUnmountDevice("swd-system"); error = i18n::tr(i18n::TextId::CnmtPrepareFailed); return false; }
+    if (!output) { error = i18n::tr(i18n::TextId::CnmtPrepareFailed); return false; }
     std::array<uint8_t, 256 * 1024> buffer{};
     bool copied = true;
     for (uint64_t offset = 0; offset < meta->size;) {
@@ -269,29 +284,39 @@ bool NspInstaller::inspect(const fs::path& source, StorageKind kind, NspPackageI
         offset += amount;
     }
     std::fclose(output);
-    if (!copied) { std::remove(temporary.string().c_str()); fsdevUnmountDevice("swd-system"); return false; }
-    char contentPath[FS_MAX_PATH]{}; std::snprintf(contentPath, sizeof(contentPath), "@SystemContent://switch-drive-cnmt.nca");
+    if (!copied || R_FAILED(fsdevCommitDevice("sdmc"))) { cleanupTemporary(); if (copied) error = i18n::tr(i18n::TextId::CnmtPrepareFailed); return false; }
+    char contentPath[FS_MAX_PATH]{}; std::snprintf(contentPath, sizeof(contentPath), "@SdCardContent://switch-drive-temp/%s", meta->name.c_str());
     FsRightsId rights{}; uint8_t keyGeneration{};
-    rc = fsGetRightsIdAndKeyGenerationByPath(contentPath, FsContentAttributes_All, &keyGeneration, &rights);
+    Result rc = fsGetRightsIdAndKeyGenerationByPath(contentPath, FsContentAttributes_All, &keyGeneration, &rights);
     FsFileSystem cnmtFs{};
     if (R_SUCCEEDED(rc)) rc = fsOpenFileSystemWithId(&cnmtFs, 0, FsFileSystemType_ContentMeta, contentPath, FsContentAttributes_All);
-    if (R_FAILED(rc)) { std::remove(temporary.string().c_str()); fsdevUnmountDevice("swd-system"); error = i18n::tr(i18n::TextId::CnmtOpenFailed); return false; }
+    if (R_FAILED(rc)) {
+        cleanupTemporary();
+        std::array<char, 192> message{};
+        std::snprintf(message.data(), message.size(), i18n::tr(i18n::TextId::CnmtOpenFailed), static_cast<unsigned>(rc));
+        error = message.data();
+        return false;
+    }
     FsDir dir{}; rc = fsFsOpenDirectory(&cnmtFs, "/", FsDirOpenMode_ReadFiles, &dir);
     FsDirectoryEntry entry{}; s64 count{}; std::string cnmtName;
     if (R_SUCCEEDED(rc)) { fsDirRead(&dir, &count, 1, &entry); fsDirClose(&dir); if (count == 1) cnmtName = entry.name; }
-    if (cnmtName.empty()) { fsFsClose(&cnmtFs); std::remove(temporary.string().c_str()); fsdevUnmountDevice("swd-system"); error = i18n::tr(i18n::TextId::CnmtFileMissing); return false; }
+    if (cnmtName.empty()) { fsFsClose(&cnmtFs); cleanupTemporary(); error = i18n::tr(i18n::TextId::CnmtFileMissing); return false; }
     FsFile file{}; s64 cnmtSize{}; rc = fsFsOpenFile(&cnmtFs, cnmtName.c_str(), FsOpenMode_Read, &file);
     if (R_SUCCEEDED(rc)) rc = fsFileGetSize(&file, &cnmtSize);
     std::vector<uint8_t> bytes(cnmtSize > 0 ? static_cast<size_t>(cnmtSize) : 0);
     if (R_SUCCEEDED(rc) && !bytes.empty()) rc = fsFileRead(&file, 0, bytes.data(), bytes.size(), FsReadOption_None, nullptr);
-    fsFileClose(&file); fsFsClose(&cnmtFs); std::remove(temporary.string().c_str()); fsdevCommitDevice("swd-system"); fsdevUnmountDevice("swd-system");
+    fsFileClose(&file); fsFsClose(&cnmtFs); cleanupTemporary();
     if (R_FAILED(rc) || !parseCnmt(bytes.data(), bytes.size(), info, error)) return false;
     info.keyGeneration = keyGeneration;
-    info.metaNcaId = meta->name.substr(0, meta->name.size() - std::string(".cnmt.nca").size());
+    info.metaNcaId = meta->name.substr(0, meta->name.size() - metaSuffixSize);
     info.hasTicket = std::any_of(pfs0.entries().begin(), pfs0.entries().end(), [](const Pfs0Entry& entry) { return extensionOf(entry.name) == ".tik"; });
     for (const auto& content : info.contents) {
-        const auto it = std::find_if(pfs0.entries().begin(), pfs0.entries().end(), [&](const Pfs0Entry& candidate) { return isNcaFileName(candidate.name, content.id, false); });
-        if (it == pfs0.entries().end() || it->size != content.size) { error = i18n::tr(i18n::TextId::NspContentMissing); return false; }
+        bool compressed{};
+        const auto* entry = findContentEntry(pfs0, content.id, false, compressed);
+        if (!entry) { error = i18n::tr(i18n::TextId::NspContentMissing); return false; }
+        uint64_t size = entry->size;
+        if (compressed && !inspectNcz(pfs0, *entry, size, error)) return false;
+        if (size != content.size) { error = i18n::tr(i18n::TextId::NspContentMissing); return false; }
     }
     return true;
 #endif
@@ -365,13 +390,25 @@ bool NspInstaller::install(const fs::path& source, StorageKind kind, const NspPa
             uint8_t rawId[16]{}, rawPlaceholder[16]{}; hexToBytes(item.id, rawId, sizeof(rawId)); hexToBytes(itemJournal.placeholderId, rawPlaceholder, sizeof(rawPlaceholder));
             NcmContentId id{}; NcmPlaceHolderId placeholder{}; std::memcpy(id.c, rawId, sizeof(rawId)); std::memcpy(placeholder.uuid.uuid, rawPlaceholder, sizeof(rawPlaceholder));
             if (R_FAILED(ncmContentStorageCreatePlaceHolder(&contentStorage, &id, &placeholder, item.size))) { error = i18n::tr(i18n::TextId::NcaReserveFailed); goto rollback; }
-            const Pfs0Entry* packageEntry = pfs0.find(item.id + (item.type == NcmContentType_Meta ? ".cnmt.nca" : ".nca"));
-            if (!packageEntry || packageEntry->size != item.size) { error = i18n::tr(i18n::TextId::NcaMissingDuringInstall); goto rollback; }
-            for (uint64_t offset = 0; offset < item.size;) {
-                const size_t amount = static_cast<size_t>(std::min<uint64_t>(buffer.size(), item.size - offset));
-                if (!pfs0.read(*packageEntry, offset, buffer.data(), amount, error) || R_FAILED(ncmContentStorageWritePlaceHolder(&contentStorage, &placeholder, offset, buffer.data(), amount))) { error = i18n::tr(i18n::TextId::NcaWriteFailed); goto rollback; }
-                offset += amount; written += amount;
-                if (!progress(written, total)) { error = i18n::tr(i18n::TextId::InstallCancelled); goto rollback; }
+            bool compressed{};
+            const Pfs0Entry* packageEntry = findContentEntry(pfs0, item.id, item.type == NcmContentType_Meta, compressed);
+            uint64_t packageSize = packageEntry ? packageEntry->size : 0;
+            if (packageEntry && compressed && !inspectNcz(pfs0, *packageEntry, packageSize, error)) goto rollback;
+            if (!packageEntry || packageSize != item.size) { error = i18n::tr(i18n::TextId::NcaMissingDuringInstall); goto rollback; }
+            const auto writeContent = [&](uint64_t offset, const void* data, size_t amount, std::string& sinkError) {
+                if (R_FAILED(ncmContentStorageWritePlaceHolder(&contentStorage, &placeholder, offset, data, amount))) { sinkError = i18n::tr(i18n::TextId::NcaWriteFailed); return false; }
+                written += amount;
+                if (!progress(written, total)) { sinkError = i18n::tr(i18n::TextId::InstallCancelled); return false; }
+                return true;
+            };
+            if (compressed) {
+                if (!streamNcz(pfs0, *packageEntry, writeContent, error)) goto rollback;
+            } else {
+                for (uint64_t offset = 0; offset < item.size;) {
+                    const size_t amount = static_cast<size_t>(std::min<uint64_t>(buffer.size(), item.size - offset));
+                    if (!pfs0.read(*packageEntry, offset, buffer.data(), amount, error) || !writeContent(offset, buffer.data(), amount, error)) goto rollback;
+                    offset += amount;
+                }
             }
             if (R_FAILED(ncmContentStorageFlushPlaceHolder(&contentStorage)) || R_FAILED(ncmContentStorageRegister(&contentStorage, &id, &placeholder))) { error = i18n::tr(i18n::TextId::NcaRegisterFailed); goto rollback; }
             ncmContentStorageDeletePlaceHolder(&contentStorage, &placeholder);

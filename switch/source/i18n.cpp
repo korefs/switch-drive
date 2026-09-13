@@ -10,7 +10,7 @@ using Catalog = std::array<const char*, textCount()>;
 #define SD_TEXTS(X) \
  X("Switch Drive", "Switch Drive", "Switch Drive") \
  X("Press A to continue.", "Pressione A para continuar.", "Pulsa A para continuar.") \
- X("Install NSP", "Instalar NSP", "Instalar NSP") \
+ X("Install NSP / NSZ", "Instalar NSP / NSZ", "Instalar NSP / NSZ") \
  X("Base game", "Jogo base", "Juego base") \
  X("Update", "Atualização", "Actualización") \
  X("DLC", "DLC", "DLC") \
@@ -100,8 +100,8 @@ using Catalog = std::array<const char*, textCount()>;
  X("Invalid NRO: NRO0 header missing", "NRO inválido: cabeçalho NRO0 ausente", "NRO inválido: falta la cabecera NRO0") \
  X("Invalid NRO: size outside limit", "NRO inválido: tamanho fora do limite", "NRO inválido: tamaño fuera del límite") \
  X("A homebrew with this name already exists", "Já existe uma homebrew com esse nome", "Ya existe un homebrew con este nombre") \
- X("Ambiguous NSP: more than one CNMT", "NSP ambíguo: mais de um CNMT", "NSP ambiguo: más de un CNMT") \
- X("Invalid NSP: NCA or CNMT missing", "NSP inválido: faltam NCA ou CNMT", "NSP inválido: faltan NCA o CNMT") \
+ X("Ambiguous package: more than one CNMT", "Pacote ambíguo: mais de um CNMT", "Paquete ambiguo: más de un CNMT") \
+ X("Invalid NSP/NSZ: NCA, NCZ, or CNMT missing", "NSP/NSZ inválido: faltam NCA, NCZ ou CNMT", "NSP/NSZ inválido: faltan NCA, NCZ o CNMT") \
  X("Ticketed NSP has no certificate", "NSP com ticket não contém certificado", "El NSP con ticket no contiene certificado") \
  X("Could not import NSP ticket", "não foi possível importar o ticket NSP", "no se pudo importar el ticket NSP") \
  X("CNMT truncated", "CNMT truncado", "CNMT truncado") \
@@ -114,16 +114,16 @@ using Catalog = std::array<const char*, textCount()>;
  X("CNMT has no installable content", "CNMT sem conteúdo instalável", "CNMT no tiene contenido instalable") \
  X("CNMT missing", "CNMT ausente", "Falta CNMT") \
  X("Reading encrypted CNMT requires a Nintendo Switch with Atmosphère", "A leitura do CNMT criptografado exige um Nintendo Switch com Atmosphère", "Leer CNMT cifrado requiere una Nintendo Switch con Atmosphère") \
- X("Could not mount SystemContent", "não foi possível montar SystemContent", "no se pudo montar SystemContent") \
+ X("Could not prepare the temporary CNMT directory on microSD", "não foi possível preparar a pasta temporária do CNMT no microSD", "no se pudo preparar la carpeta temporal del CNMT en microSD") \
  X("Could not prepare CNMT", "não foi possível preparar o CNMT", "no se pudo preparar el CNMT") \
- X("Could not open CNMT; check Atmosphère and patches", "não foi possível abrir o CNMT; verifique Atmosphère e patches", "no se pudo abrir el CNMT; comprueba Atmosphère y parches") \
+ X("Could not open CNMT; check Atmosphère and patches (Result 0x%08X)", "não foi possível abrir o CNMT; verifique Atmosphère e patches (Result 0x%08X)", "no se pudo abrir el CNMT; comprueba Atmosphère y parches (Result 0x%08X)") \
  X("CNMT file missing", "arquivo CNMT ausente", "falta el archivo CNMT") \
- X("Invalid NSP: CNMT NCA missing or wrong size", "NSP inválido: NCA do CNMT ausente ou com tamanho incorreto", "NSP inválido: falta NCA del CNMT o tiene tamaño incorrecto") \
+ X("Invalid NSP/NSZ: content missing or wrong size", "NSP/NSZ inválido: conteúdo ausente ou com tamanho incorreto", "NSP/NSZ inválido: falta contenido o tiene tamaño incorrecto") \
  X("NSP query requires a Nintendo Switch with Atmosphère", "Consulta NSP exige um Nintendo Switch com Atmosphère", "La consulta NSP requiere una Nintendo Switch con Atmosphère") \
  X("NCM unavailable; run under Atmosphère in application mode", "NCM indisponível; execute pelo Atmosphère em modo aplicação", "NCM no disponible; ejecuta Atmosphère en modo aplicación") \
  X("NS unavailable; run under Atmosphère in application mode", "NS indisponível; execute pelo Atmosphère em modo aplicação", "NS no disponible; ejecuta Atmosphère en modo aplicación") \
  X("Could not query installed content", "não foi possível consultar conteúdo instalado", "no se pudo consultar el contenido instalado") \
- X("NSP installation requires a Nintendo Switch with Atmosphère", "Instalação NSP exige um Nintendo Switch com Atmosphère", "La instalación NSP requiere una Nintendo Switch con Atmosphère") \
+ X("NSP/NSZ installation requires a Nintendo Switch with Atmosphère", "Instalação NSP/NSZ exige um Nintendo Switch com Atmosphère", "La instalación NSP/NSZ requiere una Nintendo Switch con Atmosphère") \
  X("Update rejected: an installed version is newer", "Atualização recusada: a versão instalada é mais nova", "Actualización rechazada: la versión instalada es más nueva") \
  X("Metadata NCA missing", "NCA de metadados ausente", "Falta el NCA de metadatos") \
  X("Could not open installation destination", "não foi possível abrir o destino de instalação", "no se pudo abrir el destino de instalación") \
@@ -194,11 +194,15 @@ using Catalog = std::array<const char*, textCount()>;
  X("Could not sync installation journal", "falha ao sincronizar o diário de instalação", "no se pudo sincronizar el diario de instalación") \
  X("Could not commit installation journal to microSD", "não foi possível confirmar o diário no microSD", "no se pudo confirmar el diario en microSD") \
  X("Could not commit journal cleanup", "não foi possível confirmar a limpeza do diário", "no se pudo confirmar la limpieza del diario") \
- X("Invalid NSP: PFS0 header", "NSP inválido: cabeçalho PFS0", "NSP inválido: cabecera PFS0") \
- X("Invalid NSP: PFS0 entries", "NSP inválido: entradas PFS0", "NSP inválido: entradas PFS0") \
- X("Invalid NSP: PFS0 data", "NSP inválido: dados PFS0", "NSP inválido: datos PFS0") \
- X("Invalid NSP: PFS0 name", "NSP inválido: nome", "NSP inválido: nombre") \
- X("NSP read out of bounds", "leitura NSP fora dos limites", "lectura NSP fuera de límites") \
+ X("Invalid NSP/NSZ: PFS0 header", "NSP/NSZ inválido: cabeçalho PFS0", "NSP/NSZ inválido: cabecera PFS0") \
+ X("Invalid NSP/NSZ: PFS0 entries", "NSP/NSZ inválido: entradas PFS0", "NSP/NSZ inválido: entradas PFS0") \
+ X("Invalid NSP/NSZ: PFS0 data", "NSP/NSZ inválido: dados PFS0", "NSP/NSZ inválido: datos PFS0") \
+ X("Invalid NSP/NSZ: PFS0 name", "NSP/NSZ inválido: nome", "NSP/NSZ inválido: nombre") \
+ X("NSP/NSZ read out of bounds", "leitura NSP/NSZ fora dos limites", "lectura NSP/NSZ fuera de límites") \
+ X("Invalid NCZ header", "cabeçalho NCZ inválido", "cabecera NCZ inválida") \
+ X("Invalid NCZ section table", "tabela de seções NCZ inválida", "tabla de secciones NCZ inválida") \
+ X("Invalid NCZ block table", "tabela de blocos NCZ inválida", "tabla de bloques NCZ inválida") \
+ X("Could not decompress NCZ", "não foi possível descompactar o NCZ", "no se pudo descomprimir el NCZ") \
  X("X: restart   B: cancel", "X: reiniciar   B: cancelar", "X: reiniciar   B: cancelar") \
  X("A: resume   X: restart   B: cancel", "A: retomar   X: reiniciar   B: cancelar", "A: reanudar   X: reiniciar   B: cancelar") \
  X("%s / %s · %.1f%% · Calculating speed...", "%s / %s · %.1f%% · Calculando velocidade...", "%s / %s · %.1f%% · Calculando velocidad...") \

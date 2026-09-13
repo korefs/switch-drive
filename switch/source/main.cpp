@@ -350,7 +350,7 @@ void installDownloaded(StateStore& store, State& state, Task& task) {
             library->installed = InstallKind::Nro;
             library->installedPath = location.string();
         }
-    } else if (isNsp(task.displayName)) {
+    } else if (isInstallablePackage(task.displayName)) {
         NspInstaller installer;
         NspPackageInfo package;
         std::vector<InstalledNspInfo> existing;
@@ -685,7 +685,7 @@ void library(StateStore& store, State& state) {
                     if (confirmation & HidNpadButton_B) break;
                     consoleUpdate(nullptr);
                 }
-            } else if (item.localState == LocalState::Present && isNsp(item.name)) {
+            } else if (item.localState == LocalState::Present && isInstallablePackage(item.name)) {
                 const auto task = std::find_if(state.tasks.begin(), state.tasks.end(), [&](const Task& candidate) { return candidate.id == item.id; });
                 if (task == state.tasks.end()) {
                     printf("\n"); printf(tr(TextId::InstallFailed), tr(TextId::DownloadRecordMissing)); printf("\n");
