@@ -79,7 +79,7 @@ enum class TextId {
     StorageProviders, HomeStorage, DetectNetwork, ManualSetup, ServerAddress,
     Username, Password, DetectingStorage, NoStorageFound, InvalidAddress,
     HomeBrowseHint, HideCatalogEntry, HideCatalogConfirm, ProviderConnected,
-    ButtonZL,
+    ButtonZL, NetworkProfileDiagnostic, DownloadPerformanceDiagnostic,
     Count
 };
 

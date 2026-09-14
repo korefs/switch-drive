@@ -222,7 +222,7 @@ Ui::~Ui() { shutdown(); }
 bool Ui::initialize(std::string& error) {
     auto& data = *impl_;
     if (data.ready) return true;
-    appendDiagnostic("0.2.6: main entered", true);
+    appendDiagnostic("0.2.7: main entered", true);
     #ifdef __SWITCH__
     // Launch mode comes from the homebrew ABI, not the launcher name.
     // Sphaira can launch us in either application or library-applet mode.

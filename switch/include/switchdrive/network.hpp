@@ -2,6 +2,7 @@
 #include "switchdrive/core.hpp"
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -10,9 +11,45 @@ using ActivityCallback = std::function<bool()>;
 bool continueHttpActivity(const ActivityCallback* activity);
 enum class DownloadStatus { Completed, AlreadyComplete, Paused, RangeRejected, Failed };
 
+struct DownloadWriterStats {
+    uint64_t writtenBytes{};
+    uint64_t durableBytes{};
+    uint64_t producerWaitMicroseconds{};
+    uint64_t writeMicroseconds{};
+    size_t peakQueuedBytes{};
+    bool asynchronous{};
+};
+
+enum class DownloadWriteStatus { Accepted, Cancelled, Failed };
+
+class DownloadWriter {
+  public:
+    static constexpr size_t DefaultCapacity = 1024 * 1024;
+    static constexpr size_t DefaultWriteChunk = 256 * 1024;
+    DownloadWriter(LocalFile& output, uint64_t initialOffset, size_t capacity = DefaultCapacity, size_t writeChunk = DefaultWriteChunk, bool allowAsync = true);
+    ~DownloadWriter();
+    DownloadWriter(const DownloadWriter&) = delete;
+    DownloadWriter& operator=(const DownloadWriter&) = delete;
+
+    bool start(std::string& error);
+    DownloadWriteStatus write(const void* data, size_t size, const ActivityCallback* activity, std::string& error);
+    bool checkpoint(uint64_t& durableBytes, std::string& error);
+    bool finish(uint64_t& durableBytes, std::string& error);
+    uint64_t acceptedBytes() const;
+    DownloadWriterStats stats() const;
+
+  private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 struct DownloadResult {
     DownloadStatus status{DownloadStatus::Failed};
+    uint64_t bytesReceived{};
     uint64_t bytesWritten{};
+    uint64_t bytesDurable{};
+    uint64_t totalMicroseconds{};
+    DownloadWriterStats writer;
     std::string etag;
     long httpStatus{};
 };
@@ -49,7 +86,7 @@ class HttpClient {
     bool get(const std::string& url, const std::vector<std::string>& headers, Response& out, std::string& error) const;
     bool post(const std::string& url, const std::string& body, const std::vector<std::string>& headers, Response& out, std::string& error) const;
     bool del(const std::string& url, const std::vector<std::string>& headers, Response& out, std::string& error) const;
-    bool download(const std::string& url, const std::vector<std::string>& headers, LocalFile& output, uint64_t resumeAt, uint64_t expectedSize, const std::string& ifRange, std::function<bool(const std::string&)> headersAccepted, std::function<bool(uint64_t)> progress, DownloadResult& result, std::string& error) const;
+    bool download(const std::string& url, const std::vector<std::string>& headers, DownloadWriter& output, uint64_t resumeAt, uint64_t expectedSize, const std::string& ifRange, std::function<bool(const std::string&)> headersAccepted, std::function<bool(uint64_t)> progress, DownloadResult& result, std::string& error) const;
   private:
     ActivityCallback activity_;
 };

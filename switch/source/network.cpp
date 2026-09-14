@@ -9,7 +9,10 @@
 #include <cstdlib>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
+#include <ctime>
+#include <pthread.h>
 #include <set>
 #ifdef __SWITCH__
 #include <arpa/inet.h>
@@ -39,20 +42,23 @@ std::string lower(std::string value) {
 }
 
 struct DownloadContext {
-    LocalFile* output{};
+    DownloadWriter* output{};
     uint64_t resumeAt{};
     uint64_t expectedSize{};
     uint64_t nextOffset{};
+    uint64_t receivedOffset{};
     long status{};
     std::string etag;
     std::string contentRange;
     std::string rejection;
     std::function<bool(const std::string&)> headersAccepted;
     std::function<bool(uint64_t)> progress;
+    const ActivityCallback* activity{};
     bool bodyAllowed{};
     bool alreadyComplete{};
     bool stopped{};
     bool rejected{};
+    bool writeFailed{};
 };
 
 int pump(void* user, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
@@ -69,13 +75,16 @@ size_t writeDownload(void* contents, size_t size, size_t count, void* pointer) {
         if (context->rejection.empty()) context->rejection = i18n::tr(i18n::TextId::HttpWriteNotAllowed);
         return 0;
     }
+    context->receivedOffset += bytes;
     std::string error;
-    if (!context->output->writeAt(context->nextOffset, contents, bytes, error)) {
-        context->rejected = true;
+    const auto writeStatus = context->output->write(contents, bytes, context->activity, error);
+    context->nextOffset = context->output->acceptedBytes();
+    if (writeStatus != DownloadWriteStatus::Accepted) {
+        context->stopped = writeStatus == DownloadWriteStatus::Cancelled;
+        context->writeFailed = writeStatus == DownloadWriteStatus::Failed;
         context->rejection = error;
         return 0;
     }
-    context->nextOffset += bytes;
     if (context->progress && !context->progress(context->nextOffset)) {
         context->stopped = true;
         return 0;
@@ -215,6 +224,264 @@ void setHttpStatusError(long status, std::string& error) {
 
 } // namespace
 
+struct DownloadWriter::Impl {
+    LocalFile& output;
+    const size_t capacity;
+    const size_t writeChunk;
+    const bool allowAsync;
+    std::vector<unsigned char> queue;
+    pthread_mutex_t mutex{};
+    pthread_cond_t readable{};
+    pthread_cond_t writable{};
+    pthread_cond_t stateChanged{};
+    pthread_t thread{};
+    bool synchronizationReady{};
+    bool started{};
+    bool asynchronous{};
+    bool closing{};
+    bool finished{};
+    bool joined{};
+    bool workerFailed{};
+    uint64_t acceptedOffset;
+    uint64_t writtenOffset;
+    uint64_t durableOffset;
+    uint64_t flushRequested{};
+    uint64_t flushCompleted{};
+    size_t head{};
+    size_t tail{};
+    size_t queued{};
+    size_t peakQueued{};
+    uint64_t producerWaitMicroseconds{};
+    uint64_t writeMicroseconds{};
+    std::string workerError;
+
+    Impl(LocalFile& file, uint64_t offset, size_t bufferCapacity, size_t chunk, bool useAsync)
+        : output(file), capacity(std::max<size_t>(1, bufferCapacity)),
+          writeChunk(std::max<size_t>(1, std::min(bufferCapacity, chunk))), allowAsync(useAsync),
+          acceptedOffset(offset), writtenOffset(offset), durableOffset(offset) {}
+
+    static timespec waitDeadline() {
+        timespec value{};
+        clock_gettime(CLOCK_REALTIME, &value);
+        value.tv_nsec += 50'000'000;
+        if (value.tv_nsec >= 1'000'000'000) { ++value.tv_sec; value.tv_nsec -= 1'000'000'000; }
+        return value;
+    }
+
+    static void* workerEntry(void* value) {
+        static_cast<Impl*>(value)->worker();
+        return nullptr;
+    }
+
+    void failLocked(const std::string& error) {
+        workerFailed = true;
+        workerError = error;
+        closing = true;
+        pthread_cond_broadcast(&writable);
+        pthread_cond_broadcast(&stateChanged);
+    }
+
+    void worker() {
+        std::vector<unsigned char> buffer(writeChunk);
+        for (;;) {
+            pthread_mutex_lock(&mutex);
+            while (!queued && !closing && flushRequested == flushCompleted) pthread_cond_wait(&readable, &mutex);
+            if (workerFailed) { pthread_mutex_unlock(&mutex); break; }
+            if (queued) {
+                const size_t amount = std::min({queued, writeChunk, capacity - head});
+                std::memcpy(buffer.data(), queue.data() + head, amount);
+                head = (head + amount) % capacity;
+                queued -= amount;
+                const uint64_t offset = writtenOffset;
+                pthread_cond_broadcast(&writable);
+                pthread_mutex_unlock(&mutex);
+
+                std::string error;
+                const auto began = std::chrono::steady_clock::now();
+                const bool wrote = output.writeAt(offset, buffer.data(), amount, error);
+                const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - began).count();
+                pthread_mutex_lock(&mutex);
+                writeMicroseconds += static_cast<uint64_t>(std::max<int64_t>(0, elapsed));
+                if (!wrote) failLocked(error);
+                else writtenOffset += amount;
+                pthread_cond_broadcast(&stateChanged);
+                pthread_mutex_unlock(&mutex);
+                if (!wrote) break;
+                continue;
+            }
+
+            const bool shouldFlush = flushRequested != flushCompleted;
+            const uint64_t generation = flushRequested;
+            const bool shouldClose = closing;
+            pthread_mutex_unlock(&mutex);
+            if (shouldFlush || shouldClose) {
+                std::string error;
+                const auto began = std::chrono::steady_clock::now();
+                const bool flushed = output.flush(error);
+                const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - began).count();
+                pthread_mutex_lock(&mutex);
+                writeMicroseconds += static_cast<uint64_t>(std::max<int64_t>(0, elapsed));
+                if (!flushed) failLocked(error);
+                else {
+                    durableOffset = writtenOffset;
+                    flushCompleted = generation;
+                    if (shouldClose) finished = true;
+                }
+                pthread_cond_broadcast(&stateChanged);
+                pthread_mutex_unlock(&mutex);
+                if (!flushed || shouldClose) break;
+            }
+        }
+        pthread_mutex_lock(&mutex);
+        finished = true;
+        pthread_cond_broadcast(&stateChanged);
+        pthread_cond_broadcast(&writable);
+        pthread_mutex_unlock(&mutex);
+    }
+};
+
+DownloadWriter::DownloadWriter(LocalFile& output, uint64_t initialOffset, size_t capacity, size_t writeChunk, bool allowAsync)
+    : impl_(std::make_unique<Impl>(output, initialOffset, capacity, writeChunk, allowAsync)) {}
+
+DownloadWriter::~DownloadWriter() {
+    std::string error;
+    uint64_t durable{};
+    finish(durable, error);
+    if (impl_->synchronizationReady) {
+        pthread_cond_destroy(&impl_->stateChanged);
+        pthread_cond_destroy(&impl_->writable);
+        pthread_cond_destroy(&impl_->readable);
+        pthread_mutex_destroy(&impl_->mutex);
+    }
+}
+
+bool DownloadWriter::start(std::string&) {
+    auto& data = *impl_;
+    if (data.started) return true;
+    data.started = true;
+    if (!data.allowAsync || pthread_mutex_init(&data.mutex, nullptr) != 0) return true;
+    if (pthread_cond_init(&data.readable, nullptr) != 0) { pthread_mutex_destroy(&data.mutex); return true; }
+    if (pthread_cond_init(&data.writable, nullptr) != 0) { pthread_cond_destroy(&data.readable); pthread_mutex_destroy(&data.mutex); return true; }
+    if (pthread_cond_init(&data.stateChanged, nullptr) != 0) { pthread_cond_destroy(&data.writable); pthread_cond_destroy(&data.readable); pthread_mutex_destroy(&data.mutex); return true; }
+    data.synchronizationReady = true;
+    data.queue.resize(data.capacity);
+    pthread_attr_t attributes;
+    if (pthread_attr_init(&attributes) != 0) { data.queue.clear(); return true; }
+    const int stackConfigured = pthread_attr_setstacksize(&attributes, 256 * 1024);
+    const int created = stackConfigured == 0 ? pthread_create(&data.thread, &attributes, Impl::workerEntry, &data) : stackConfigured;
+    pthread_attr_destroy(&attributes);
+    if (created != 0) { data.queue.clear(); return true; }
+    data.asynchronous = true;
+    return true;
+}
+
+DownloadWriteStatus DownloadWriter::write(const void* bytes, size_t size, const ActivityCallback* activity, std::string& error) {
+    auto& data = *impl_;
+    if (!data.started) start(error);
+    if (!data.asynchronous) {
+        const auto began = std::chrono::steady_clock::now();
+        const bool wrote = data.output.writeAt(data.acceptedOffset, bytes, size, error);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - began).count();
+        data.writeMicroseconds += static_cast<uint64_t>(std::max<int64_t>(0, elapsed));
+        if (!wrote) { data.workerFailed = true; data.workerError = error; return DownloadWriteStatus::Failed; }
+        data.acceptedOffset += size;
+        data.writtenOffset = data.acceptedOffset;
+        return DownloadWriteStatus::Accepted;
+    }
+    const auto* source = static_cast<const unsigned char*>(bytes);
+    size_t remaining = size;
+    while (remaining) {
+        pthread_mutex_lock(&data.mutex);
+        while (data.queued == data.capacity && !data.workerFailed) {
+            const auto began = std::chrono::steady_clock::now();
+            const timespec deadline = Impl::waitDeadline();
+            pthread_cond_timedwait(&data.writable, &data.mutex, &deadline);
+            const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - began).count();
+            data.producerWaitMicroseconds += static_cast<uint64_t>(std::max<int64_t>(0, elapsed));
+            if (data.queued == data.capacity && !data.workerFailed) {
+                pthread_mutex_unlock(&data.mutex);
+                if (!continueHttpActivity(activity)) return DownloadWriteStatus::Cancelled;
+                pthread_mutex_lock(&data.mutex);
+            }
+        }
+        if (data.workerFailed) { error = data.workerError; pthread_mutex_unlock(&data.mutex); return DownloadWriteStatus::Failed; }
+        const size_t amount = std::min({remaining, data.capacity - data.queued, data.capacity - data.tail});
+        std::memcpy(data.queue.data() + data.tail, source, amount);
+        data.tail = (data.tail + amount) % data.capacity;
+        data.queued += amount;
+        data.peakQueued = std::max(data.peakQueued, data.queued);
+        data.acceptedOffset += amount;
+        pthread_cond_signal(&data.readable);
+        pthread_mutex_unlock(&data.mutex);
+        source += amount;
+        remaining -= amount;
+    }
+    return DownloadWriteStatus::Accepted;
+}
+
+bool DownloadWriter::checkpoint(uint64_t& durableBytes, std::string& error) {
+    auto& data = *impl_;
+    if (!data.started) start(error);
+    if (!data.asynchronous) {
+        if (data.workerFailed) { error = data.workerError; durableBytes = data.durableOffset; return false; }
+        if (!data.output.flush(error)) return false;
+        data.durableOffset = data.writtenOffset;
+        durableBytes = data.durableOffset;
+        return true;
+    }
+    pthread_mutex_lock(&data.mutex);
+    if (data.workerFailed) { error = data.workerError; pthread_mutex_unlock(&data.mutex); return false; }
+    if (data.finished) { durableBytes = data.durableOffset; pthread_mutex_unlock(&data.mutex); return true; }
+    const uint64_t generation = ++data.flushRequested;
+    pthread_cond_signal(&data.readable);
+    while (data.flushCompleted < generation && !data.workerFailed) pthread_cond_wait(&data.stateChanged, &data.mutex);
+    if (data.workerFailed) { error = data.workerError; pthread_mutex_unlock(&data.mutex); return false; }
+    durableBytes = data.durableOffset;
+    pthread_mutex_unlock(&data.mutex);
+    return true;
+}
+
+bool DownloadWriter::finish(uint64_t& durableBytes, std::string& error) {
+    auto& data = *impl_;
+    if (!data.started) start(error);
+    if (!data.asynchronous) {
+        if (data.finished) { durableBytes = data.durableOffset; return !data.workerFailed; }
+        if (data.workerFailed) { error = data.workerError; durableBytes = data.durableOffset; return false; }
+        if (!data.output.flush(error)) { data.workerFailed = true; data.workerError = error; return false; }
+        data.durableOffset = data.writtenOffset;
+        data.finished = true;
+        durableBytes = data.durableOffset;
+        return true;
+    }
+    pthread_mutex_lock(&data.mutex);
+    data.closing = true;
+    pthread_cond_signal(&data.readable);
+    while (!data.finished) pthread_cond_wait(&data.stateChanged, &data.mutex);
+    const bool failed = data.workerFailed;
+    if (failed) error = data.workerError;
+    durableBytes = data.durableOffset;
+    pthread_mutex_unlock(&data.mutex);
+    if (!data.joined) { pthread_join(data.thread, nullptr); data.joined = true; }
+    return !failed;
+}
+
+uint64_t DownloadWriter::acceptedBytes() const {
+    const auto& data = *impl_;
+    if (!data.asynchronous) return data.acceptedOffset;
+    pthread_mutex_lock(const_cast<pthread_mutex_t*>(&data.mutex));
+    const uint64_t result = data.acceptedOffset;
+    pthread_mutex_unlock(const_cast<pthread_mutex_t*>(&data.mutex));
+    return result;
+}
+
+DownloadWriterStats DownloadWriter::stats() const {
+    const auto& data = *impl_;
+    if (data.asynchronous) pthread_mutex_lock(const_cast<pthread_mutex_t*>(&data.mutex));
+    DownloadWriterStats result{data.writtenOffset, data.durableOffset, data.producerWaitMicroseconds, data.writeMicroseconds, data.peakQueued, data.asynchronous};
+    if (data.asynchronous) pthread_mutex_unlock(const_cast<pthread_mutex_t*>(&data.mutex));
+    return result;
+}
+
 bool HttpClient::get(const std::string& url, const std::vector<std::string>& headers, Response& out, std::string& error) const {
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -283,7 +550,7 @@ bool HttpClient::del(const std::string& url, const std::vector<std::string>& hea
     return true;
 }
 
-bool HttpClient::download(const std::string& url, const std::vector<std::string>& headers, LocalFile& output, uint64_t resumeAt, uint64_t expectedSize, const std::string& ifRange, std::function<bool(const std::string&)> headersAccepted, std::function<bool(uint64_t)> progress, DownloadResult& result, std::string& error) const {
+bool HttpClient::download(const std::string& url, const std::vector<std::string>& headers, DownloadWriter& output, uint64_t resumeAt, uint64_t expectedSize, const std::string& ifRange, std::function<bool(const std::string&)> headersAccepted, std::function<bool(uint64_t)> progress, DownloadResult& result, std::string& error) const {
     CURL* curl = curl_easy_init();
     if (!curl) {
         error = i18n::tr(i18n::TextId::CurlUnavailable);
@@ -294,19 +561,33 @@ bool HttpClient::download(const std::string& url, const std::vector<std::string>
     if (resumeAt && !ifRange.empty()) all.emplace_back("If-Range: " + ifRange);
     curl_slist* list = nullptr;
     configure(curl, all, list, error, &activity_);
-    DownloadContext context{&output, resumeAt, expectedSize, resumeAt, 0, {}, {}, {}, std::move(headersAccepted), std::move(progress)};
+    if (!output.start(error)) { curl_slist_free_all(list); curl_easy_cleanup(curl); return false; }
+    DownloadContext context{&output, resumeAt, expectedSize, resumeAt, resumeAt, 0, {}, {}, {}, std::move(headersAccepted), std::move(progress), &activity_};
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeDownload);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &context);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, captureDownloadHeader);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &context);
+    const auto began = std::chrono::steady_clock::now();
     const auto curlResult = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &result.httpStatus);
     curl_slist_free_all(list);
     curl_easy_cleanup(curl);
 
-    result.bytesWritten = context.nextOffset;
+    std::string writerError;
+    uint64_t durableBytes{};
+    const bool writerFinished = output.finish(durableBytes, writerError);
+    result.totalMicroseconds = static_cast<uint64_t>(std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - began).count()));
+    result.bytesReceived = context.receivedOffset;
+    result.writer = output.stats();
+    result.bytesWritten = result.writer.writtenBytes;
+    result.bytesDurable = durableBytes;
     result.etag = context.etag;
+    if (!writerFinished) {
+        result.status = DownloadStatus::Failed;
+        error = writerError;
+        return false;
+    }
     if (context.stopped) {
         result.status = DownloadStatus::Paused;
         error = i18n::tr(i18n::TextId::DownloadPaused);
@@ -317,9 +598,14 @@ bool HttpClient::download(const std::string& url, const std::vector<std::string>
         error = context.rejection.empty() ? i18n::tr(i18n::TextId::RangeDenied) : context.rejection;
         return false;
     }
-    if (curlResult != CURLE_OK) {
+    if (context.writeFailed) {
         result.status = DownloadStatus::Failed;
-        if (curlResult == CURLE_ABORTED_BY_CALLBACK) error = i18n::tr(i18n::TextId::OperationCancelled);
+        error = context.rejection;
+        return false;
+    }
+    if (curlResult != CURLE_OK) {
+        result.status = curlResult == CURLE_ABORTED_BY_CALLBACK ? DownloadStatus::Paused : DownloadStatus::Failed;
+        if (curlResult == CURLE_ABORTED_BY_CALLBACK) error = i18n::tr(i18n::TextId::DownloadPaused);
         else error = curl_easy_strerror(curlResult);
         return false;
     }
@@ -327,7 +613,7 @@ bool HttpClient::download(const std::string& url, const std::vector<std::string>
         result.status = DownloadStatus::AlreadyComplete;
         return true;
     }
-    if (!context.bodyAllowed || context.nextOffset != expectedSize) {
+    if (!context.bodyAllowed || result.bytesReceived != expectedSize || result.bytesWritten != expectedSize || result.bytesDurable != expectedSize) {
         result.status = DownloadStatus::Failed;
         error = i18n::tr(i18n::TextId::DownloadSizeMismatch);
         return false;

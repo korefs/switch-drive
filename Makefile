@@ -5,16 +5,16 @@ SOURCES := switch/source
 INCLUDES := switch/include
 APP_TITLE := Switch Drive
 APP_AUTHOR := kore
-APP_VERSION := 0.2.6
+APP_VERSION := 0.2.7
 ICON := icon.jpg
 ROMFS := romfs
 
 ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 PKG_CONFIG := $(DEVKITPRO)/portlibs/switch/bin/aarch64-none-elf-pkg-config
-CFLAGS := `$(PKG_CONFIG) --cflags sdl2 SDL2_ttf` -g -Wall -Wextra -O2 -ffunction-sections $(ARCH)
+CFLAGS := `$(PKG_CONFIG) --cflags sdl2 SDL2_ttf` -g -Wall -Wextra -O2 -ffunction-sections -pthread $(ARCH)
 CXXFLAGS := $(CFLAGS) -std=gnu++20 -fno-rtti -fno-exceptions
 LDFLAGS := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
-LIBS := -lcurl -ljansson -lmbedcrypto -lzstd -lz `$(PKG_CONFIG) --libs sdl2 SDL2_ttf` -lnx
+LIBS := -lcurl -ljansson -lmbedcrypto -lzstd -lz `$(PKG_CONFIG) --libs sdl2 SDL2_ttf` -lnx -pthread
 LIBDIRS := $(PORTLIBS) $(LIBNX)
 
 include $(DEVKITPRO)/libnx/switch_rules

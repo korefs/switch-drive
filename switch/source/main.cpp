@@ -28,13 +28,19 @@ namespace {
 
 bool networkReady{};
 uint32_t networkResult{};
+uint32_t networkTcpRxSize{};
+uint32_t networkTcpRxMaxSize{};
+bool networkSocketFallback{};
 
 constexpr const char* kRoot = "sdmc:/switch-drive";
 constexpr const char* kDefaultService = "";
 constexpr uint64_t kCheckpointBytes = 64ULL * 1024ULL * 1024ULL;
 constexpr auto kCheckpointInterval = std::chrono::seconds(10);
-constexpr auto kTransferUiInterval = std::chrono::milliseconds(100);
+constexpr auto kTransferInputInterval = std::chrono::milliseconds(50);
+constexpr auto kTransferUiInterval = std::chrono::milliseconds(250);
+std::chrono::steady_clock::time_point lastNetworkInputAt{};
 std::chrono::steady_clock::time_point lastNetworkUiAt{};
+bool networkCancelRequested{};
 void title(const char* page) {
     consoleClear();
     ui::instance().setHeader(page);
@@ -91,14 +97,24 @@ void waitForButton() {
 
 bool pumpUi() {
     const auto now = std::chrono::steady_clock::now();
-    if (now - lastNetworkUiAt < kTransferUiInterval) return appletMainLoop();
-    lastNetworkUiAt = now;
-    consoleUpdate(nullptr);
-    hidScanInput();
-    return appletMainLoop() && !(hidKeysDown(CONTROLLER_P1_AUTO) & HidNpadButton_B);
+    if (now - lastNetworkInputAt >= kTransferInputInterval) {
+        lastNetworkInputAt = now;
+        hidScanInput();
+        networkCancelRequested = networkCancelRequested || (hidKeysDown(CONTROLLER_P1_AUTO) & HidNpadButton_B);
+    }
+    if (now - lastNetworkUiAt >= kTransferUiInterval) {
+        lastNetworkUiAt = now;
+        consoleUpdate(nullptr);
+    }
+    return appletMainLoop() && !networkCancelRequested;
 }
 
-HttpClient activeHttp() { return HttpClient{pumpUi}; }
+HttpClient activeHttp() {
+    lastNetworkInputAt = {};
+    lastNetworkUiAt = {};
+    networkCancelRequested = false;
+    return HttpClient{pumpUi};
+}
 
 bool chooseNspDestination(const NspPackageInfo& package, const std::vector<InstalledNspInfo>& installed, NspInstallStorage& destination) {
     destination = NspInstallStorage::SdCard;
@@ -297,9 +313,9 @@ bool reconcileTask(Task& task, std::string& error) {
     return true;
 }
 
-bool checkpointTask(StateStore& store, State& state, Task& task, LocalFile& file, std::string& error) {
+bool checkpointTask(StateStore& store, State& state, Task& task, DownloadWriter& writer, std::string& error) {
     uint64_t size{};
-    if (!file.flush(error) || !file.size(size, error)) return false;
+    if (!writer.checkpoint(size, error)) return false;
     if (size > task.expectedSize) {
         error = tr(TextId::PartialTooLarge);
         return false;
@@ -530,41 +546,73 @@ void downloadFile(StateStore& store, State& state, const RemoteEntry& remote, bo
     auto lastCheckpoint = task->committedBytes;
     auto lastCheckpointAt = std::chrono::steady_clock::now();
     DownloadResult result;
+    DownloadWriter writer(output, task->committedBytes);
     const DownloadRequest request = homeStorage && home ? HomeStorageProvider(activeHttp(), *home).downloadRequest(remote) : GoogleStorageProvider(activeHttp(), token).downloadRequest(remote);
-    const bool downloaded = task->committedBytes == task->expectedSize || activeHttp().download(
-        request.url,
-        request.headers,
-        output,
-        task->committedBytes,
-        task->expectedSize,
-        task->etag,
-        [&](const std::string& etag) {
-            task->etag = etag;
-            return store.save(state, error);
-        },
-        [&](uint64_t received) {
-            const auto now = std::chrono::steady_clock::now();
-            if (received == task->expectedSize || now - lastProgressAt >= kTransferUiInterval) {
-                ui::instance().setProgress(received, task->expectedSize);
-                const std::string progress = formatTransferProgress(received, task->expectedSize, transferMeter.sample(received, task->expectedSize, now));
-                printf("\r%s   ", progress.c_str());
-                lastProgressAt = now;
-            }
-            if (received - lastCheckpoint >= kCheckpointBytes && now - lastCheckpointAt >= kCheckpointInterval) {
-                if (!checkpointTask(store, state, *task, output, error)) return false;
-                lastCheckpoint = task->committedBytes;
-                lastCheckpointAt = now;
-            }
-            return appletMainLoop();
-        },
-        result,
-        error);
+    bool downloaded{};
+    if (task->committedBytes == task->expectedSize) {
+        uint64_t durable{};
+        downloaded = writer.finish(durable, error) && durable == task->expectedSize;
+        result.bytesReceived = result.bytesWritten = result.bytesDurable = durable;
+        result.writer = writer.stats();
+        result.status = downloaded ? DownloadStatus::AlreadyComplete : DownloadStatus::Failed;
+    } else {
+        downloaded = activeHttp().download(
+            request.url,
+            request.headers,
+            writer,
+            task->committedBytes,
+            task->expectedSize,
+            task->etag,
+            [&](const std::string& etag) {
+                task->etag = etag;
+                return store.save(state, error);
+            },
+            [&](uint64_t received) {
+                const auto now = std::chrono::steady_clock::now();
+                if (received == task->expectedSize || now - lastProgressAt >= kTransferUiInterval) {
+                    ui::instance().setProgress(received, task->expectedSize);
+                    const std::string progress = formatTransferProgress(received, task->expectedSize, transferMeter.sample(received, task->expectedSize, now));
+                    printf("\r%s   ", progress.c_str());
+                    lastProgressAt = now;
+                }
+                if (received - lastCheckpoint >= kCheckpointBytes && now - lastCheckpointAt >= kCheckpointInterval) {
+                    if (!checkpointTask(store, state, *task, writer, error)) return false;
+                    lastCheckpoint = task->committedBytes;
+                    lastCheckpointAt = now;
+                }
+                return appletMainLoop();
+            },
+            result,
+            error);
+    }
 
+    uint64_t finalDurable{};
+    std::string finalizationError;
+    if (!writer.finish(finalDurable, finalizationError)) {
+        downloaded = false;
+        result.status = DownloadStatus::Failed;
+        if (error.empty()) error = finalizationError;
+    }
+    result.writer = writer.stats();
+    result.bytesWritten = result.writer.writtenBytes;
+    result.bytesDurable = finalDurable;
     std::string checkpointError;
-    if (!checkpointTask(store, state, *task, output, checkpointError) && error.empty()) error = checkpointError;
+    if (!checkpointTask(store, state, *task, writer, checkpointError)) {
+        downloaded = false;
+        result.status = DownloadStatus::Failed;
+        if (error.empty()) error = checkpointError;
+    }
+    char transferDiagnostic[320]{};
+    std::snprintf(transferDiagnostic, sizeof(transferDiagnostic), tr(TextId::DownloadPerformanceDiagnostic),
+        ui::instance().appletMode() ? 1 : 0, networkTcpRxSize, networkTcpRxMaxSize, networkSocketFallback ? 1 : 0,
+        static_cast<unsigned long long>(result.bytesReceived), static_cast<unsigned long long>(result.bytesWritten),
+        static_cast<unsigned long long>(result.bytesDurable), static_cast<unsigned long long>(result.totalMicroseconds),
+        static_cast<unsigned long long>(result.writer.producerWaitMicroseconds), static_cast<unsigned long long>(result.writer.writeMicroseconds),
+        static_cast<unsigned long long>(result.writer.peakQueuedBytes), result.writer.asynchronous ? 1 : 0);
+    ui::instance().diagnostic(transferDiagnostic);
     output.close();
     if (!downloaded) {
-        task->state = result.status == DownloadStatus::RangeRejected ? TaskState::Failed : TaskState::Paused;
+        task->state = result.status == DownloadStatus::Paused ? TaskState::Paused : TaskState::Failed;
         task->error = error;
         saveOrShow(store, state);
         printf("\n%s: %s\n", tr(result.status == DownloadStatus::RangeRejected ? TextId::RangeRejected : TextId::Paused), error.c_str());
@@ -883,19 +931,27 @@ int main(int argc, char* argv[]) {
     }
     ui::instance().diagnostic("main: ui initialized or fallback active");
     SocketInitConfig socketConfig = *socketGetDefaultInitConfig();
-    if (ui::instance().appletMode()) {
-        socketConfig.tcp_tx_buf_size = 0x8000;
-        socketConfig.tcp_rx_buf_size = 0x10000;
-        socketConfig.tcp_tx_buf_max_size = 0;
-        socketConfig.tcp_rx_buf_max_size = 0;
-        socketConfig.sb_efficiency = 2;
+    socketConfig.tcp_rx_buf_size = 256 * 1024;
+    socketConfig.tcp_rx_buf_max_size = 512 * 1024;
+    socketConfig.sb_efficiency = 4;
+    Result socketResult = socketInitialize(&socketConfig);
+    bool socketFallback{};
+    if (R_FAILED(socketResult)) {
+        socketFallback = true;
+        socketConfig = *socketGetDefaultInitConfig();
+        socketResult = socketInitialize(&socketConfig);
     }
-    const Result socketResult = socketInitialize(&socketConfig);
+    networkTcpRxSize = socketConfig.tcp_rx_buf_size;
+    networkTcpRxMaxSize = socketConfig.tcp_rx_buf_max_size;
+    networkSocketFallback = socketFallback;
     const CURLcode curlResult = curl_global_init(CURL_GLOBAL_DEFAULT);
     networkReady = R_SUCCEEDED(socketResult) && curlResult == CURLE_OK;
     networkResult = R_FAILED(socketResult) ? socketResult : static_cast<uint32_t>(curlResult);
     char networkDiagnostic[128]{};
     std::snprintf(networkDiagnostic, sizeof(networkDiagnostic), "main: socket=%08x curl=%d", socketResult, static_cast<int>(curlResult));
+    ui::instance().diagnostic(networkDiagnostic);
+    std::snprintf(networkDiagnostic, sizeof(networkDiagnostic), tr(TextId::NetworkProfileDiagnostic), ui::instance().appletMode() ? 1 : 0,
+        socketConfig.tcp_rx_buf_size, socketConfig.tcp_rx_buf_max_size, socketResult, socketFallback ? 1 : 0);
     ui::instance().diagnostic(networkDiagnostic);
     StateStore store(kRoot);
     State state = store.load();

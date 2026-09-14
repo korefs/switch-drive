@@ -239,7 +239,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("Controller ready", "Controle conectado", "Control conectado") \
  X("Connect a controller", "Conecte um controle", "Conecta un control") \
  X("Waiting for input focus", "Aguardando foco de controle", "Esperando el foco de control") \
- X("Version 0.2.6", "Versão 0.2.6", "Versión 0.2.6") \
+ X("Version 0.2.7", "Versão 0.2.7", "Versión 0.2.7") \
  X("Preparing download…", "Preparando download…", "Preparando descarga…") \
  X("Verifying downloaded file…", "Verificando arquivo baixado…", "Verificando archivo descargado…") \
  X("B: pause download", "B: pausar download", "B: pausar descarga") \
@@ -264,7 +264,9 @@ using Catalog = std::array<const char*, textCount()>;
  X("Hide catalog entry", "Ocultar item do catálogo", "Ocultar elemento del catálogo") \
  X("Hide this item from Home Storage? The PC file will not be deleted.", "Ocultar este item do Home Storage? O arquivo do PC não será excluído.", "¿Ocultar este elemento de Home Storage? El archivo del PC no se eliminará.") \
  X("Home Storage connected: %s", "Home Storage conectado: %s", "Home Storage conectado: %s") \
- X("ZL", "ZL", "ZL")
+ X("ZL", "ZL", "ZL") \
+ X("network: applet=%d rx=%u/%u socket=%08x fallback=%d", "network: applet=%d rx=%u/%u socket=%08x fallback=%d", "network: applet=%d rx=%u/%u socket=%08x fallback=%d") \
+ X("download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d", "download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d", "download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d")
 
 #define EN(en, pt, es) en,
 constexpr const char* kEnglishKeys[] = { SD_TEXTS(EN) SD_HOME_TEXTS(EN) };
