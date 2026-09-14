@@ -5,7 +5,7 @@
 
 # Switch Drive
 
-*Browse Google Drive and download files directly from a Nintendo Switch.*
+*Browse Google Drive or your own storage from a Nintendo Switch.*
 
 [![CI](https://img.shields.io/github/actions/workflow/status/korefs/switch-drive/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/korefs/switch-drive/actions/workflows/ci.yml)
 [![Latest tag](https://img.shields.io/github/v/tag/korefs/switch-drive?style=flat-square&label=version)](https://github.com/korefs/switch-drive/tags)
@@ -14,6 +14,7 @@
 
 [Features](#features) ·
 [Get started](#get-started) ·
+[Home Storage](#run-home-storage) ·
 [Controls](#controls) ·
 [Self-host](#self-host-the-pairing-service) ·
 [Build](#build-and-test)
@@ -21,10 +22,9 @@
 </div>
 <!-- markdownlint-enable MD033 MD041 -->
 
-Switch Drive is an early-stage Nintendo Switch homebrew app for read-only access
-to Google Drive. Pair an account with a phone, browse **My Drive** or **Shared
-with me**, and save files directly to the microSD card. Supported packages can
-also be installed from the console.
+Switch Drive is a Nintendo Switch homebrew app for accessing Google Drive and
+self-hosted Home Storage providers. Browse remote folders, save files directly
+to the microSD card, and optionally install supported packages from the console.
 
 > [!IMPORTANT]
 > NSP and NSZ operations require an Atmosphère console running Switch Drive in
@@ -32,14 +32,15 @@ also be installed from the console.
 
 ## Features
 
-<<<<<<< HEAD
 - Phone-based Google OAuth pairing with a QR code or short URL and six-digit
   code—no Google credentials are entered on the Switch.
-- Direct downloads from Google Drive to
+- Self-hosted Home Storage providers with LAN discovery, manual addresses,
+  optional authentication, and a read-only host library.
+- Direct downloads from the selected provider to
   `sd:/switch-drive/downloads/<task-id>/<filename>`; file contents never pass
   through the pairing service.
-- Safe resume after interruption, guarded by Drive revision, ETag, HTTP range,
-  expected size, and MD5 metadata when Google provides it.
+- Safe resume after interruption, guarded by provider identity, revision, ETag,
+  HTTP range, expected size, and MD5 or SHA-256 metadata.
 - Files of 4 GiB or more stored as native HOS concatenated files, avoiding the
   FAT32 per-file limit while preserving one logical filename on the Switch.
 - Standalone NRO installation and transactional NSP/NSZ installation for one
@@ -52,52 +53,6 @@ also be installed from the console.
   Spanish.
 - Two interchangeable self-hosted pairing services: Node.js/Docker or
   Cloudflare Workers.
-=======
-- Pair a Google account from a phone using a short-lived URL and code, without
-  typing Google credentials on the Switch.
-- Add more Google accounts. The most recently connected account becomes the
-  active account in the current MVP.
-- Browse **My Drive** and **Shared with me**, including nested folders and items
-  exposed through shared drives.
-- Add one or more self-hosted **Home Storage** providers, discover them on the
-  local network, and browse a private PC folder through the same download and
-  installation workflow.
-- Download files directly from the selected provider to
-  `sd:/switch-drive/downloads/<task-id>/`; file data does not pass through the
-  pairing service.
-- Download files of 4 GiB or more as native HOS concatenated files, preserving
-  one logical filename on the Switch while avoiding FAT32's per-file limit.
-- Resume an interrupted download only after validating its provider identity, revision, ETag,
-  HTTP range, expected size, and checksum metadata; invalid partial data can be
-  restarted without appending a full response to it.
-
-On a FAT32 card inspected outside HOS, a large download appears as the
-filesystem's concatenated-file directory and its internal segments. Keep that
-directory intact; Switch Drive and HOS access it through the original logical
-filename.
-- Validate the downloaded size and the Google Drive MD5 checksum when one is
-  available.
-- Choose between **download** and **download and install** for supported files.
-- Install standalone NRO homebrew under `sd:/switch/<app-name>/` using a
-  temporary file before replacing the final executable.
-- Optionally remove the downloaded package after a successful installation.
-- Keep a local library of downloads and check for externally deleted files only
-  when the user opens the corresponding item.
-- Use a self-hosted OAuth service with encrypted refresh tokens, expiring
-  pairings, one-time claims, rate limiting, PostgreSQL storage, and HTTPS through
-  Caddy.
-- Use a native 1280×720 graphical interface with a navy/cyan theme, the Switch
-  shared system font, controller navigation, and touch targets. The interface
-  is available in English (US), Portuguese (Brazil), or Spanish; English (US)
-  is the default for new and migrated installations.
-
-### Languages
-
-The Switch client stores an explicit UI-language preference in local state; it
-does not infer the console language. Open **Settings** and press **Y** to cycle
-through `English (US)` → `Português (Brasil)` → `Español`. The setting applies
-immediately and is retained after relaunch.
->>>>>>> 8a1ee12125a90b13465347f4721385a2cd08f37f
 
 ### File support
 
@@ -114,32 +69,7 @@ immediately and is retained after relaunch.
 > HOS, a concatenated file appears as a directory containing numbered segments.
 > Keep that directory intact.
 
-<<<<<<< HEAD
 ## How it works
-=======
-- **D-pad / either stick:** move the highlighted card or list selection. Hold
-  a direction to repeat. Left from the first column enters the section menu;
-  Up/Down selects a section, and Right or A returns to the cards.
-- **L/R:** change the main section.
-- **A:** activate the highlighted card, select, or open.
-- **B:** go back; on the main screen, focus the section menu.
-- **X:** download the selected remote file.
-- **Y:** download and install the selected remote file.
-- **ZL in Home Storage:** hide the selected catalog entry when the device token
-  has catalog-management permission. This changes only SQLite on the PC.
-- **Y in Library:** delete the downloaded package after confirmation, without
-  uninstalling the game or deleting saves. Downloads without a managed installation
-  are removed from the list; installed items retain their installation record.
-  If the package was already removed, Y offers managed component uninstallation.
-- **X in Library:** uninstall the selected managed NSP component after confirmation;
-  saves are retained. This is separate from deleting a downloaded package.
-- **Y in Settings:** change the UI language.
-- **L while browsing:** switch between My Drive and Shared with me.
-- **+:** close the app.
-- **Touch:** select sections and action cards. Tap a file row to select it;
-  tap the selected row again to open/check it. Swipe to scroll. The footer
-  shows controller shortcuts for downloading, installing, and going back.
->>>>>>> 8a1ee12125a90b13465347f4721385a2cd08f37f
 
 ```mermaid
 flowchart LR
@@ -149,11 +79,13 @@ flowchart LR
     P -->|encrypted refresh token| DB[(PostgreSQL)]
     P <-->|OAuth exchange| G[Google OAuth]
     S -->|browse and download directly| D[Google Drive API]
+    S <-->|catalog and direct downloads| H[Home Storage]
+    H -->|read-only mount| L[(Host library)]
 ```
 
 The pairing service holds the Google refresh token and returns a short-lived
-Drive access token to the console. The console then lists and downloads content
-directly from Google over HTTPS.
+Drive access token to the console. Google Drive and Home Storage file data flows
+directly to the console; Home Storage does not depend on the pairing service.
 
 ## Get started
 
@@ -162,9 +94,10 @@ directly from Google over HTTPS.
 - A Nintendo Switch capable of running homebrew with
   [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere).
 - A FAT32 or exFAT microSD card. FAT32 is recommended for homebrew setups.
-- A public HTTPS hostname for the pairing service.
-- A Google Cloud OAuth 2.0 web client with the Google Drive API enabled.
 - A built `switch-drive.nro`, or the devkitPro toolchain to create it.
+- For Google Drive: a public HTTPS hostname and a Google Cloud OAuth 2.0 web
+  client with the Drive API enabled.
+- For Home Storage: Docker on the computer that hosts the library.
 
 ### 1. Configure Google OAuth
 
@@ -236,7 +169,6 @@ downloads remain available in applet mode, where the app displays a warning.
 
 ### 4. Pair and download
 
-<<<<<<< HEAD
 1. Choose **Connect Drive**.
 2. Scan the QR code, or open the displayed URL and enter its six-digit code.
 3. Approve read-only Drive access, return to the Switch, and press **A** to
@@ -246,13 +178,30 @@ downloads remain available in applet mode, where the app displays a warning.
 
 Pairing requests expire after ten minutes. Connecting another account makes it
 the active account; a full account switcher is not implemented yet.
-=======
+
 ## Run Home Storage
 
-[`home-storage/`](home-storage/README.md) is an independent .NET 10/Docker
-storage provider that exposes a host library folder read-only. It supports LAN
-discovery, optional credentials, an SQLite catalog, and resumable HTTP range
-downloads. It does not replace or depend on the Google Drive pairing service.
+Home Storage is an optional .NET 10 service that exposes a private computer
+folder through the same browse, download, resume, and install workflow. The
+library is mounted read-only; SQLite stores its catalog and credentials.
+
+```powershell
+cd home-storage
+Copy-Item .env.example .env
+# Set HOST_LIBRARY_PATH and replace SETUP_TOKEN in .env.
+docker compose up -d
+```
+
+Open `http://localhost:8080/setup`, enter `SETUP_TOKEN`, and create the
+administrator and Switch-library credentials. On the Switch, open **Settings →
+Home Storage**, then detect the service on the LAN or enter its address
+manually.
+
+LAN discovery uses UDP port 8080 and may be blocked by wireless client
+isolation. Plain HTTP is appropriate only on a trusted LAN; use HTTPS and Home
+Storage authentication for remote access. See the complete
+[Home Storage guide](./home-storage/README.md), including the optional
+Cloudflare Tunnel setup.
 
 ## Security and data handling
 
@@ -260,8 +209,9 @@ The client never stores Google refresh tokens or a Home Storage password. It
 stores the console session credential, account IDs, and revocable Home Storage
 bearer tokens in `sd:/switch-drive/state.json`. The pairing server encrypts
 refresh tokens using `TOKEN_ENCRYPTION_KEY` before writing them to PostgreSQL.
-Do not commit `.env`, console state, logs, or Google OAuth credentials.
->>>>>>> 8a1ee12125a90b13465347f4721385a2cd08f37f
+Home Storage hashes passwords and bearer tokens, mounts the host library
+read-only, and hides catalog entries only in SQLite. Do not commit `.env`,
+console state, logs, OAuth credentials, or tunnel tokens.
 
 ## Controls
 
@@ -277,6 +227,8 @@ Do not commit `.env`, console state, logs, or Google OAuth credentials.
 | **L/R** | Change the main section |
 | **L** while browsing | Toggle **My Drive** and **Shared with me** |
 | **Y** in Settings | Cycle `en-US` → `pt-BR` → `es-ES` |
+| **ZL** in Settings | Add a Home Storage provider |
+| **ZL** in Home Storage | Hide an entry when catalog management is allowed |
 | **+** | Exit |
 | Touch | Select tabs, cards, and rows; tap again to activate; swipe to scroll |
 
@@ -359,6 +311,15 @@ npm ci
 npm run check
 ```
 
+### Home Storage
+
+Run the .NET test target in Docker:
+
+```sh
+cd home-storage
+docker build --target test -t switch-drive-home-storage-tests .
+```
+
 ## Safety and recovery
 
 - State writes use temporary files, backups, and atomic replacement.
@@ -370,6 +331,8 @@ npm run check
 - Managed removal deletes only the selected base, update, or DLC component
   after orphan checks. Switch Drive never calls save-data deletion APIs.
 - Package cleanup happens only after a confirmed installation.
+- Home Storage mounts the host library read-only. Hiding an entry changes only
+  its SQLite catalog and never deletes the host file.
 
 Package signature verification is not implemented yet. Atmosphère and the
 appropriate FS patches remain the operator's responsibility.
@@ -385,6 +348,8 @@ appropriate FS patches remain the operator's responsibility.
   whether the Google consent screen is still in testing mode.
 - **Interrupted download:** select the same Drive file again. Switch Drive will
   offer Resume only when its saved identity and partial data are consistent.
+- **Home Storage is not discovered:** check UDP port 8080 and wireless client
+  isolation, or enter the HTTP/HTTPS address manually.
 - **Startup or input problem:** preserve `sd:/switch-drive/boot.log` immediately
   after the failed attempt; each launch replaces it. Include Switch firmware,
   Atmosphère, Sphaira/hbmenu, launch mode, and microSD filesystem in the report.
@@ -396,6 +361,7 @@ appropriate FS patches remain the operator's responsibility.
 | `switch/` | C++20 client, UI, networking, downloader, and installers |
 | `server/` | Fastify pairing/OAuth service for Docker deployments |
 | `worker/` | Cloudflare Worker implementation of the same pairing API |
+| `home-storage/` | .NET 10 service for a private, read-only host library |
 | `tests/` | Portable core, UI model, renderer, and NRO packaging checks |
 | `docs/openapi.yaml` | Pairing service API contract |
 | `deploy/` | Caddy reverse-proxy configuration |
