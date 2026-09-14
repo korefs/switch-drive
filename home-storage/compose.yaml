@@ -1,0 +1,44 @@
+services:
+  home-storage:
+    build:
+      context: .
+      target: final
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      LIBRARY_MOUNT_ROOT: /library
+      DATA_PATH: /data
+      SETUP_TOKEN: ${SETUP_TOKEN:?set SETUP_TOKEN in .env}
+    ports:
+      - "${HOME_STORAGE_PORT:-8080}:${HOME_STORAGE_PORT:-8080}/tcp"
+      - "${DISCOVERY_PORT:-8080}:${DISCOVERY_PORT:-8080}/udp"
+    volumes:
+      - type: bind
+        source: ${HOST_LIBRARY_PATH:?set HOST_LIBRARY_PATH in .env}
+        target: /library
+        read_only: true
+      - type: volume
+        source: home-storage-data
+        target: /data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:${HOME_STORAGE_PORT:-8080}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      home-storage:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  home-storage-data:

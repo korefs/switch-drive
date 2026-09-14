@@ -32,6 +32,7 @@ also be installed from the console.
 
 ## Features
 
+<<<<<<< HEAD
 - Phone-based Google OAuth pairing with a QR code or short URL and six-digit
   code—no Google credentials are entered on the Switch.
 - Direct downloads from Google Drive to
@@ -51,6 +52,52 @@ also be installed from the console.
   Spanish.
 - Two interchangeable self-hosted pairing services: Node.js/Docker or
   Cloudflare Workers.
+=======
+- Pair a Google account from a phone using a short-lived URL and code, without
+  typing Google credentials on the Switch.
+- Add more Google accounts. The most recently connected account becomes the
+  active account in the current MVP.
+- Browse **My Drive** and **Shared with me**, including nested folders and items
+  exposed through shared drives.
+- Add one or more self-hosted **Home Storage** providers, discover them on the
+  local network, and browse a private PC folder through the same download and
+  installation workflow.
+- Download files directly from the selected provider to
+  `sd:/switch-drive/downloads/<task-id>/`; file data does not pass through the
+  pairing service.
+- Download files of 4 GiB or more as native HOS concatenated files, preserving
+  one logical filename on the Switch while avoiding FAT32's per-file limit.
+- Resume an interrupted download only after validating its provider identity, revision, ETag,
+  HTTP range, expected size, and checksum metadata; invalid partial data can be
+  restarted without appending a full response to it.
+
+On a FAT32 card inspected outside HOS, a large download appears as the
+filesystem's concatenated-file directory and its internal segments. Keep that
+directory intact; Switch Drive and HOS access it through the original logical
+filename.
+- Validate the downloaded size and the Google Drive MD5 checksum when one is
+  available.
+- Choose between **download** and **download and install** for supported files.
+- Install standalone NRO homebrew under `sd:/switch/<app-name>/` using a
+  temporary file before replacing the final executable.
+- Optionally remove the downloaded package after a successful installation.
+- Keep a local library of downloads and check for externally deleted files only
+  when the user opens the corresponding item.
+- Use a self-hosted OAuth service with encrypted refresh tokens, expiring
+  pairings, one-time claims, rate limiting, PostgreSQL storage, and HTTPS through
+  Caddy.
+- Use a native 1280×720 graphical interface with a navy/cyan theme, the Switch
+  shared system font, controller navigation, and touch targets. The interface
+  is available in English (US), Portuguese (Brazil), or Spanish; English (US)
+  is the default for new and migrated installations.
+
+### Languages
+
+The Switch client stores an explicit UI-language preference in local state; it
+does not infer the console language. Open **Settings** and press **Y** to cycle
+through `English (US)` → `Português (Brasil)` → `Español`. The setting applies
+immediately and is retained after relaunch.
+>>>>>>> 8a1ee12125a90b13465347f4721385a2cd08f37f
 
 ### File support
 
@@ -67,7 +114,32 @@ also be installed from the console.
 > HOS, a concatenated file appears as a directory containing numbered segments.
 > Keep that directory intact.
 
+<<<<<<< HEAD
 ## How it works
+=======
+- **D-pad / either stick:** move the highlighted card or list selection. Hold
+  a direction to repeat. Left from the first column enters the section menu;
+  Up/Down selects a section, and Right or A returns to the cards.
+- **L/R:** change the main section.
+- **A:** activate the highlighted card, select, or open.
+- **B:** go back; on the main screen, focus the section menu.
+- **X:** download the selected remote file.
+- **Y:** download and install the selected remote file.
+- **ZL in Home Storage:** hide the selected catalog entry when the device token
+  has catalog-management permission. This changes only SQLite on the PC.
+- **Y in Library:** delete the downloaded package after confirmation, without
+  uninstalling the game or deleting saves. Downloads without a managed installation
+  are removed from the list; installed items retain their installation record.
+  If the package was already removed, Y offers managed component uninstallation.
+- **X in Library:** uninstall the selected managed NSP component after confirmation;
+  saves are retained. This is separate from deleting a downloaded package.
+- **Y in Settings:** change the UI language.
+- **L while browsing:** switch between My Drive and Shared with me.
+- **+:** close the app.
+- **Touch:** select sections and action cards. Tap a file row to select it;
+  tap the selected row again to open/check it. Swipe to scroll. The footer
+  shows controller shortcuts for downloading, installing, and going back.
+>>>>>>> 8a1ee12125a90b13465347f4721385a2cd08f37f
 
 ```mermaid
 flowchart LR
@@ -164,6 +236,7 @@ downloads remain available in applet mode, where the app displays a warning.
 
 ### 4. Pair and download
 
+<<<<<<< HEAD
 1. Choose **Connect Drive**.
 2. Scan the QR code, or open the displayed URL and enter its six-digit code.
 3. Approve read-only Drive access, return to the Switch, and press **A** to
@@ -173,6 +246,22 @@ downloads remain available in applet mode, where the app displays a warning.
 
 Pairing requests expire after ten minutes. Connecting another account makes it
 the active account; a full account switcher is not implemented yet.
+=======
+## Run Home Storage
+
+[`home-storage/`](home-storage/README.md) is an independent .NET 10/Docker
+storage provider that exposes a host library folder read-only. It supports LAN
+discovery, optional credentials, an SQLite catalog, and resumable HTTP range
+downloads. It does not replace or depend on the Google Drive pairing service.
+
+## Security and data handling
+
+The client never stores Google refresh tokens or a Home Storage password. It
+stores the console session credential, account IDs, and revocable Home Storage
+bearer tokens in `sd:/switch-drive/state.json`. The pairing server encrypts
+refresh tokens using `TOKEN_ENCRYPTION_KEY` before writing them to PostgreSQL.
+Do not commit `.env`, console state, logs, or Google OAuth credentials.
+>>>>>>> 8a1ee12125a90b13465347f4721385a2cd08f37f
 
 ## Controls
 
