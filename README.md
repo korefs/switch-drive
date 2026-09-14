@@ -1,283 +1,319 @@
+<!-- markdownlint-disable MD033 MD041 -->
+<div align="center">
+
+<img src="./icon.jpg" width="112" alt="Switch Drive logo">
+
 # Switch Drive
 
-Switch Drive is a GPL-3.0 Nintendo Switch homebrew for accessing files from
-Google Drive on an Atmosphère console. It pairs with Google through a phone,
-browses Drive folders, downloads files directly to the microSD card, and keeps
-a local library of downloads made by the app.
+*Browse Google Drive and download files directly from a Nintendo Switch.*
 
-Large-file support requires HOS 4.0.0 or later.
+[![CI](https://img.shields.io/github/actions/workflow/status/korefs/switch-drive/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/korefs/switch-drive/actions/workflows/ci.yml)
+[![Latest tag](https://img.shields.io/github/v/tag/korefs/switch-drive?style=flat-square&label=version)](https://github.com/korefs/switch-drive/tags)
+![C++20](https://img.shields.io/badge/C++-20-00599C?style=flat-square&logo=cplusplus)
+[![GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](./LICENSE)
+
+[Features](#features) ·
+[Get started](#get-started) ·
+[Controls](#controls) ·
+[Self-host](#self-host-the-pairing-service) ·
+[Build](#build-and-test)
+
+</div>
+<!-- markdownlint-enable MD033 MD041 -->
+
+Switch Drive is an early-stage Nintendo Switch homebrew app for read-only access
+to Google Drive. Pair an account with a phone, browse **My Drive** or **Shared
+with me**, and save files directly to the microSD card. Supported packages can
+also be installed from the console.
+
+> [!IMPORTANT]
+> NSP and NSZ operations require an Atmosphère console running Switch Drive in
+> application mode. Only install packages you trust and are authorized to use.
 
 ## Features
 
-- Pair a Google account from a phone using a short-lived URL and code, without
-  typing Google credentials on the Switch.
-- Add more Google accounts. The most recently connected account becomes the
-  active account in the current MVP.
-- Browse **My Drive** and **Shared with me**, including nested folders and items
-  exposed through shared drives.
-- Download files directly from Google to
-  `sd:/switch-drive/downloads/<task-id>/`; file data does not pass through the
-  pairing service.
-- Download files of 4 GiB or more as native HOS concatenated files, preserving
-  one logical filename on the Switch while avoiding FAT32's per-file limit.
-- Resume an interrupted download only after validating its Drive revision, ETag,
-  HTTP range, expected size, and checksum metadata; invalid partial data can be
-  restarted without appending a full response to it.
-
-On a FAT32 card inspected outside HOS, a large download appears as the
-filesystem's concatenated-file directory and its internal segments. Keep that
-directory intact; Switch Drive and HOS access it through the original logical
-filename.
-- Validate the downloaded size and the Google Drive MD5 checksum when one is
-  available.
-- Choose between **download** and **download and install** for supported files.
-- Install standalone NRO homebrew under `sd:/switch/<app-name>/` using a
-  temporary file before replacing the final executable.
-- Optionally remove the downloaded package after a successful installation.
-- Keep a local library of downloads and check for externally deleted files only
-  when the user opens the corresponding item.
-- Use a self-hosted OAuth service with encrypted refresh tokens, expiring
-  pairings, one-time claims, rate limiting, PostgreSQL storage, and HTTPS through
-  Caddy.
-- Use a native 1280×720 graphical interface with a navy/cyan theme, the Switch
-  shared system font, controller navigation, and touch targets. The interface
-  is available in English (US), Portuguese (Brazil), or Spanish; English (US)
-  is the default for new and migrated installations.
-
-### Languages
-
-The Switch client stores an explicit UI-language preference in local state; it
-does not infer the console language. Open **Settings** and press **Y** to cycle
-through `English (US)` → `Português (Brasil)` → `Español`. The setting applies
-immediately and is retained after relaunch.
+- Phone-based Google OAuth pairing with a QR code or short URL and six-digit
+  code—no Google credentials are entered on the Switch.
+- Direct downloads from Google Drive to
+  `sd:/switch-drive/downloads/<task-id>/<filename>`; file contents never pass
+  through the pairing service.
+- Safe resume after interruption, guarded by Drive revision, ETag, HTTP range,
+  expected size, and MD5 metadata when Google provides it.
+- Files of 4 GiB or more stored as native HOS concatenated files, avoiding the
+  FAT32 per-file limit while preserving one logical filename on the Switch.
+- Standalone NRO installation and transactional NSP/NSZ installation for one
+  base game, update, or DLC per package.
+- Downgrade protection, selectable SD/internal installation storage,
+  interrupted-install recovery, and managed component removal that preserves
+  save data.
+- Local download library with optional package cleanup after installation.
+- Controller and touch navigation in English (US), Portuguese (Brazil), and
+  Spanish.
+- Two interchangeable self-hosted pairing services: Node.js/Docker or
+  Cloudflare Workers.
 
 ### File support
 
-| File type                               | Download |     Install | Current state                                                                            |
-| --------------------------------------- | -------: | ----------: | ---------------------------------------------------------------------------------------- |
-| `.nro`                                  |      Yes |         Yes | Standalone homebrew is supported                                                         |
-| `.nsp`                                  |      Yes |         Yes | Installs one base game, update, or DLC through the Goldleaf-derived NCM adapter           |
-| `.nsz`                                  |      Yes |         Yes | Streams solid or block-compressed NCZ content directly into NCM without an intermediate NSP |
-| `.xci`, `.zip`, and other files         |      Yes |          No | Stored as regular downloads                                                              |
-| Native Google documents                 |       No |          No | Metadata can be listed; export is planned                                                |
+| Type | Download | Install | Notes |
+| --- | :---: | :---: | --- |
+| `.nro` | Yes | Yes | Standalone app in `sd:/switch/<app-name>/` |
+| `.nsp` | Yes | Yes | One base game, update, or DLC through NCM |
+| `.nsz` | Yes | Yes | Streams NCZ into NCM; no intermediate NSP |
+| `.xci`, `.zip`, and other files | Yes | No | Stored as regular downloads |
+| Native Google documents | No | No | Metadata only; no export |
 
-### Controls
+> [!NOTE]
+> Large-file support requires HOS 4.0.0 or later. On a FAT32 card viewed outside
+> HOS, a concatenated file appears as a directory containing numbered segments.
+> Keep that directory intact.
 
-- **D-pad / either stick:** move the highlighted card or list selection. Hold
-  a direction to repeat. Left from the first column enters the section menu;
-  Up/Down selects a section, and Right or A returns to the cards.
-- **L/R:** change the main section.
-- **A:** activate the highlighted card, select, or open.
-- **B:** go back; on the main screen, focus the section menu.
-- **X:** download the selected Drive file.
-- **Y:** download and install the selected Drive file.
-- **Y in Library:** delete the downloaded package after confirmation, without
-  uninstalling the game or deleting saves. Downloads without a managed installation
-  are removed from the list; installed items retain their installation record.
-  If the package was already removed, Y offers managed component uninstallation.
-- **X in Library:** uninstall the selected managed NSP component after confirmation;
-  saves are retained. This is separate from deleting a downloaded package.
-- **Y in Settings:** change the UI language.
-- **L while browsing:** switch between My Drive and Shared with me.
-- **+:** close the app.
-- **Touch:** select sections and action cards. Tap a file row to select it;
-  tap the selected row again to open/check it. Swipe to scroll. The footer
-  shows controller shortcuts for downloading, installing, and going back.
+## How it works
 
-Launch from a title override (hold **R** while opening a game) for NSP/NSZ actions.
-When opened as an applet, Switch Drive keeps the UI and actions available but
-shows a persistent warning; any unavailable NCM operation is reported in the
-app instead of closing it.
-
-## Status
-
-This repository contains an early MVP: the Switch client, the OAuth pairing
-service, Docker deployment files, and host tests for the local state model and
-PFS0 parser. NRO and transactional NSP/NSZ installation are implemented. Package
-installation requires an Atmosphère console launched in application mode. A real
-console and a private Google Cloud OAuth client are required for final
-acceptance testing.
-
-## Roadmap
-
-### Next priorities
-
-1. **Complete NSP/NSZ installation and removal:** done for one base game, update,
-   or DLC per package, with managed component removal and interrupted-install
-   recovery. Full package signature verification remains planned below.
-2. **Show a QR code on the Switch:** keep the short URL and pairing code as a
-   fallback, while allowing the user to scan and authenticate immediately from
-   a phone.
-3. **Add a complete account switcher:** display account name and avatar, switch
-   accounts without reconnecting, remember a folder per account, and revoke an
-   account from the console.
-4. **Create a durable transfer queue:** pause, resume, retry, reorder, and cancel
-   downloads; restore interrupted tasks after reopening the app; show speed,
-   remaining time, and required disk space.
-5. **Improve package identification:** read title ID, name, version, required
-   firmware, content type, and installed version before installation. Warn about
-   missing base games, incompatible updates, and duplicate content.
-6. **Complete library management:** install an existing download, download it
-   again, delete only the package, uninstall managed content, remove a broken
-   shortcut, and reconcile content removed by another application.
-### Drive and browsing improvements
-
-- Search the current folder or every connected account.
-- Add favorites, recent locations, download history, and quick access to the
-  last opened folders.
-- Provide a dedicated browser for Shared Drives in addition to Shared with me.
-- Resolve Google Drive shortcuts, preserve resource keys, and detect shortcut
-  loops.
-- Cache folder listings and thumbnails for faster navigation, with an explicit
-  refresh action.
-- Filter and sort by file type, title, size, modification date, and installed
-  state.
-- Show game icons, covers, update relationships, and DLC belonging to the
-  selected base game.
-
-### Installation and storage improvements
-
-- Install homebrew bundles containing assets and configuration files instead of
-  supporting only a standalone NRO.
-- Offer streaming installation to reduce temporary microSD usage, after the
-  download-first workflow is proven reliable.
-- Add a storage dashboard showing free space, queued downloads, installed
-  content, removable packages, and pending cleanup.
-- Verify package integrity and signatures before installation, with clear
-  diagnostics for damaged or unsupported files.
-- Add optional bandwidth limits and an automatic pause when the console enters
-  sleep mode or the network changes.
-- Allow the user to choose the cleanup rule: always keep, always remove after a
-  successful install, or ask each time.
-
-### Longer-term ideas
-
-- Export user-owned installed content and upload it to Drive with resumable
-  uploads and a separate write permission.
-- Synchronize selected Drive folders for offline use while the app is open.
-- Add WebDAV, S3-compatible storage, Dropbox, and local network sources through
-  the same provider interface.
-- Send a download or install request from a phone or web dashboard to a paired
-  console, requiring confirmation on the Switch.
-- Add safe application updates, release notes, and rollback to the previous NRO.
-- Export a diagnostic report with private data removed to simplify bug reports.
-- Add themes, accessibility settings, and configurable controls.
-
-## Build the Switch client
-
-Install devkitPro's `switch-dev`, `switch-curl`, `switch-mbedtls`, `switch-zstd`,
-`switch-jansson`, `switch-sdl2`, and `switch-sdl2_ttf`
-packages, then run:
-
-```sh
-make
+```mermaid
+flowchart LR
+    S[Nintendo Switch] -->|start and poll pairing| P[Pairing service]
+    P -->|session and short-lived token| S
+    M[Phone browser] -->|Google OAuth approval| P
+    P -->|encrypted refresh token| DB[(PostgreSQL)]
+    P <-->|OAuth exchange| G[Google OAuth]
+    S -->|browse and download directly| D[Google Drive API]
 ```
 
-Copy `switch-drive.nro` to `sd:/switch/switch-drive/switch-drive.nro` and run
-it from Sphaira or hbmenu. Use application mode (hold R while launching a
-game) for NSP operations. The graphical browser does not require title override.
+The pairing service holds the Google refresh token and returns a short-lived
+Drive access token to the console. The console then lists and downloads content
+directly from Google over HTTPS.
 
-### Startup and Sphaira
+## Get started
 
-Version 0.2.6 uses two video buffers. With only one, the compositor can retain
-the displayed frame while the app waits for a free buffer to draw the next
-one, stopping input polling as well. The old first frame displayed
-`Connect a controller` before polling input, so that frozen message did not
-establish a HID failure. The renderer now follows the double-buffer setup in
-the [libnx graphics example](https://github.com/switchbrew/switch-examples/blob/master/graphics/simplegfx/source/main.c).
+### Requirements
 
-Input uses libnx's standard pad API for all eight controller slots and handheld
-Joy-Cons, with both sticks, D-pad, A/B/X/Y and L/R navigation. A activates the
-highlighted card. The main menu polls input and handles + before presenting a
-frame. SDL joystick polling was removed: the Switch SDL backend uses the same
-libnx pad API and reconfigures HID, so it was not an independent fallback.
-The footer reports the sampled connection and focus state. The boot log records
-input polls and video dequeue/queue stages for frames 1–3, 60 and 300, plus
-connection/focus changes and +, to distinguish a render stall from missing input.
+- A Nintendo Switch capable of running homebrew with
+  [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere).
+- A FAT32 or exFAT microSD card. FAT32 is recommended for homebrew setups.
+- A public HTTPS hostname for the pairing service.
+- A Google Cloud OAuth 2.0 web client with the Google Drive API enabled.
+- A built `switch-drive.nro`, or the devkitPro toolchain to create it.
 
-Version 0.2.1 fixes an NRO packaging error: setting `ROMFS` and `ICON` alone
-did not pass them to `elf2nro`. The previous artifact had no `ASET` section,
-so mandatory `romfsInit()` failed and sent the app into the terminal fallback.
-The build now embeds the icon, NACP, and RomFS, and a missing optional logo
-no longer prevents the graphical interface from opening. This follows the
-[Switch application template](https://github.com/switchbrew/switch-examples/blob/master/templates/application/Makefile).
+### 1. Configure Google OAuth
 
-Sphaira may run under different homebrew launch modes; its name alone does
-not identify the available memory or services. Switch Drive reads the mode
-from libnx, uses smaller network buffers and a bounded text cache in applet
-mode, and records startup stages in `sd:/switch-drive/boot.log`. Network
-initialization failures are shown when an online action is attempted.
+1. Enable the Google Drive API in a Google Cloud project.
+2. Configure the OAuth consent screen. While the app is in testing mode, add
+   each user as a test user.
+3. Create an OAuth 2.0 **Web application** client.
+4. Register this exact redirect URI, replacing the hostname:
 
-Direct Sphaira launch still needs hardware acceptance. If it fails, retain
-`boot.log` immediately after that attempt, before launching through R (each
-launch replaces the log). Include the Sphaira, Atmosphère, and firmware
-versions. A missing log means execution did not reach the logged startup
-stage, or the SD log could not be written; it does not establish the cause.
+   ```text
+   https://drive.example.com/oauth/google/callback
+   ```
 
-## Run the pairing service
+> [!NOTE]
+> External OAuth apps in testing mode are limited to approved test users, and
+> their refresh tokens expire after seven days. The requested `drive.readonly`
+> scope is restricted, so review Google's
+> [OAuth production requirements](https://developers.google.com/identity/protocols/oauth2/production-readiness/overview)
+> and [Drive scope guidance](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)
+> before distributing a public deployment.
+
+### 2. Deploy the pairing service
+
+The quickest local-server deployment uses Docker Compose with PostgreSQL and
+Caddy:
 
 ```sh
 cp server/.env.example server/.env
-# set the Google OAuth and encryption values in server/.env
-docker compose --env-file server/.env up --build
+# Edit server/.env with the public hostname, OAuth client, and random secrets.
+docker compose --env-file server/.env up --build -d
 ```
 
-`PUBLIC_ORIGIN` must be a public HTTPS URL registered in Google Cloud Console as
-`<PUBLIC_ORIGIN>/oauth/google/callback`. Add each beta tester in the OAuth
-consent screen. Testing-mode Drive refresh tokens expire after seven days.
+Set `PUBLIC_ORIGIN` to the HTTPS origin used in Google Cloud and `PUBLIC_HOST`
+to the hostname only. Generate `TOKEN_ENCRYPTION_KEY` and `COOKIE_SECRET` as
+shown in `server/.env.example`, and choose a separate long random PostgreSQL
+password. Caddy obtains and renews the TLS certificate.
 
-The Switch client obtains its service URL from `sd:/switch-drive/config.json`:
+Confirm the public endpoint before configuring the console:
+
+```sh
+curl https://drive.example.com/health
+```
+
+For the serverless alternative, follow the
+[Cloudflare Worker deployment guide](./worker/README.md).
+
+### 3. Prepare the SD card
+
+Copy the NRO and create the service configuration:
+
+```text
+sd:/
+├── switch/
+│   └── switch-drive/
+│       └── switch-drive.nro
+└── switch-drive/
+    └── config.json
+```
+
+`config.json` must contain the public HTTPS origin in this compact form:
 
 ```json
 {"service_url":"https://drive.example.com"}
 ```
 
-## Run the pairing service on Cloudflare Workers
+Launch Switch Drive from Sphaira or hbmenu. Use a title override—hold **R**
+while opening a game—for NSP/NSZ installation and removal. Browsing and regular
+downloads remain available in applet mode, where the app displays a warning.
 
-The optional [`worker/`](worker/README.md) deployment target runs the same
-pairing API on a public HTTPS Worker. It requires a managed PostgreSQL database
-through Cloudflare Hyperdrive; do not expose the Docker PostgreSQL service on a
-home network to the Internet. After configuring a custom domain and registering
-`https://<host>/oauth/google/callback` in Google Cloud, deploy it with Wrangler
-and use that public HTTPS origin as `service_url`.
+### 4. Pair and download
 
-## Security and data handling
+1. Choose **Connect Drive**.
+2. Scan the QR code, or open the displayed URL and enter its six-digit code.
+3. Approve read-only Drive access, return to the Switch, and press **A** to
+   check the pairing.
+4. Open **Files**, select a file, then press **X** to download or **Y** to
+   download and install.
 
-The client never stores Google refresh tokens. It stores only a console session
-credential and account IDs in `sd:/switch-drive/state.json`. The server encrypts
-refresh tokens using `TOKEN_ENCRYPTION_KEY` before writing them to PostgreSQL.
-Do not commit `.env`, console state, logs, or Google OAuth credentials.
+Pairing requests expire after ten minutes. Connecting another account makes it
+the active account; a full account switcher is not implemented yet.
 
-## Attribution
+## Controls
 
-The NSP/NSZ installation adapter follows the NCM installation approach from
-[Goldleaf](https://github.com/XorTroll/Goldleaf), GPL-3.0. The pinned upstream
-source is kept under `third_party/Goldleaf`, and the integration boundary is in
-`switch/source/installer.cpp`. Goldleaf's license and notices must remain with
-redistributed source and binaries that incorporate its code.
+| Input | Action |
+| --- | --- |
+| D-pad or either stick | Move the selection; hold to repeat |
+| **A** | Activate; open a folder; install a Library NSP/NSZ |
+| **B** | Go back; pause/cancel an active network operation |
+| **X** in Files | Download the selected file |
+| **Y** in Files | Download and install the selected file |
+| **X** in Library | Confirm uninstall of a managed NSP component |
+| **Y** in Library | Delete the package or offer managed uninstall |
+| **L/R** | Change the main section |
+| **L** while browsing | Toggle **My Drive** and **Shared with me** |
+| **Y** in Settings | Cycle `en-US` → `pt-BR` → `es-ES` |
+| **+** | Exit |
+| Touch | Select tabs, cards, and rows; tap again to activate; swipe to scroll |
 
-The streaming NCZ reader implements the public
-[NSZ/NCZ format](https://github.com/nicoboss/nsz/blob/master/docs/formats.md)
-using zstd and AES-CTR; it does not bundle console keys or copyrighted content.
+## Self-host the pairing service
 
-## NSP safety
+The service requests only `drive.readonly` and identity scopes. It provides:
 
-Before writing content, Switch Drive identifies a base game, update, or DLC
-from its CNMT, shows its title ID and version, and asks for microSD or internal
-user storage. It blocks downgrades and treats an equal version as already
-installed. Existing content stays in place until replacement metadata commits.
-An `install-journal.json` is recovered on the next launch if the app is
-interrupted. Managed removal removes only that component and never calls
-save-data deletion APIs.
+- ten-minute, attempt-limited pairings with one-time claims;
+- 180-day console sessions stored as hashes;
+- AES-256-GCM encryption for Google refresh tokens at rest;
+- short-lived Drive access tokens for linked consoles;
+- per-route and global rate limiting; and
+- automatic PostgreSQL schema creation.
 
-Install only trusted packages. NSP/NSZ installation requires Atmosphère and any
-appropriate FS patches; execute Switch Drive by holding R while launching a
-game, not as a restricted applet.
+The REST contract is documented in [the OpenAPI specification](./docs/openapi.yaml).
 
-## Tests
+> [!WARNING]
+> Never commit `server/.env`, OAuth credentials, `state.json`, or `boot.log`.
+> Do not expose the Docker PostgreSQL port directly to the internet. Use the
+> included Caddy service or a managed PostgreSQL database with the Worker.
 
-Run portable model/parser tests without devkitPro:
+## Build and test
+
+### Switch client
+
+Install devkitPro with `switch-dev`, `switch-curl`, `switch-mbedtls`,
+`switch-zstd`, `switch-jansson`, `switch-sdl2`, and `switch-sdl2_ttf`, then run:
 
 ```sh
-cmake -S tests -B build/tests && cmake --build build/tests && ctest --test-dir build/tests
+make
+python3 tests/check_nro.py switch-drive.nro
 ```
+
+The packaging check verifies the NRO header and its embedded icon, NACP, and
+RomFS assets.
+
+### Portable C++ tests
+
+The host suite covers state migration and atomic persistence, resumable logical
+files, safe package removal, PFS0/CNMT/NCZ parsing, download range validation,
+localization, QR generation, and UI navigation models.
+
+```sh
+cmake -S tests -B build/tests
+cmake --build build/tests
+ctest --test-dir build/tests --output-on-failure
+```
+
+The host needs CMake 3.24+, a C++20 compiler, zstd, and mbedTLS crypto headers
+and libraries.
+
+### Optional UI preview and runtime simulation
+
+Install host SDL2, SDL2_ttf, and pkg-config, then configure either option:
+
+```sh
+cmake -S tests -B build/preview \
+  -DSWITCHDRIVE_UI_PREVIEW=ON \
+  -DSWITCHDRIVE_UI_RUNTIME_TESTS=ON
+cmake --build build/preview
+SWITCHDRIVE_PREVIEW_FONT=/path/to/font.ttf ctest --test-dir build/preview --output-on-failure
+SWITCHDRIVE_PREVIEW_FONT=/path/to/font.ttf build/preview/switch_drive_ui_preview
+```
+
+Preview images are written to `build/ui-preview/`. These tests exercise the
+real renderer with host or simulated services; they do not emulate Switch HID,
+the compositor, memory limits, or NCM permissions.
+
+### TypeScript services
+
+The Docker service requires Node.js 24 or later. The Worker uses Wrangler 4.
+
+```sh
+cd server
+npm ci
+npm run build
+
+cd ../worker
+npm ci
+npm run check
+```
+
+## Safety and recovery
+
+- State writes use temporary files, backups, and atomic replacement.
+- Downloads checkpoint committed data and reject unsafe HTTP range responses or
+  changed Drive revisions before resuming.
+- NSP/NSZ mutations are journaled before NCM changes. On the next launch, the
+  app checks live metadata and either completes or rolls back recovery.
+- Existing content remains registered until replacement metadata commits.
+- Managed removal deletes only the selected base, update, or DLC component
+  after orphan checks. Switch Drive never calls save-data deletion APIs.
+- Package cleanup happens only after a confirmed installation.
+
+Package signature verification is not implemented yet. Atmosphère and the
+appropriate FS patches remain the operator's responsibility.
+
+## Troubleshooting
+
+- **Configuration missing:** verify that
+  `sd:/switch-drive/config.json` uses the exact compact JSON shown above and an
+  HTTPS origin without an API path.
+- **Install controls unavailable:** relaunch through a full title override by
+  holding **R** while opening a game.
+- **Pairing stops working after several days:** reconnect the account and check
+  whether the Google consent screen is still in testing mode.
+- **Interrupted download:** select the same Drive file again. Switch Drive will
+  offer Resume only when its saved identity and partial data are consistent.
+- **Startup or input problem:** preserve `sd:/switch-drive/boot.log` immediately
+  after the failed attempt; each launch replaces it. Include Switch firmware,
+  Atmosphère, Sphaira/hbmenu, launch mode, and microSD filesystem in the report.
+
+## Project structure
+
+| Path | Purpose |
+| --- | --- |
+| `switch/` | C++20 client, UI, networking, downloader, and installers |
+| `server/` | Fastify pairing/OAuth service for Docker deployments |
+| `worker/` | Cloudflare Worker implementation of the same pairing API |
+| `tests/` | Portable core, UI model, renderer, and NRO packaging checks |
+| `docs/openapi.yaml` | Pairing service API contract |
+| `deploy/` | Caddy reverse-proxy configuration |
+| `third_party/Goldleaf/` | Pinned Goldleaf reference for NCM integration |
+
+The NSP/NSZ installer follows the NCM approach from
+[Goldleaf](https://github.com/XorTroll/Goldleaf). NCZ streaming implements the
+public [NSZ format](https://github.com/nicoboss/nsz/blob/master/docs/formats.md)
+with zstd and AES-CTR; this project does not ship console keys or copyrighted
+content.
