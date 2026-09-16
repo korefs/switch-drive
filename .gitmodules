@@ -1,0 +1,6 @@
+[submodule "third_party/Goldleaf"]
+	path = third_party/Goldleaf
+	url = https://github.com/XorTroll/Goldleaf.git
+[submodule "third_party/borealis"]
+	path = third_party/borealis
+	url = https://github.com/i3sey/borealis.git

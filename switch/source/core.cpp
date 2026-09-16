@@ -10,6 +10,9 @@
 #include <system_error>
 
 #include <unistd.h>
+#ifdef _WIN32
+#include <io.h>
+#endif
 #ifdef __SWITCH__
 #include <switch.h>
 #endif
@@ -19,6 +22,14 @@ namespace switchdrive {
 namespace {
 
 constexpr size_t kFileBufferSize = 256 * 1024;
+
+int syncFile(std::FILE* file) {
+#ifdef _WIN32
+    return ::_commit(::_fileno(file));
+#else
+    return ::fsync(::fileno(file));
+#endif
+}
 
 const char* taskStateName(TaskState state) {
     switch (state) {
@@ -616,7 +627,7 @@ bool LocalFile::flush(std::string& error) {
 #ifndef __SWITCH__
     if (kind_ == StorageKind::Concatenated) return true;
 #endif
-    if (std::fflush(file_) != 0 || ::fsync(::fileno(file_)) != 0) {
+    if (std::fflush(file_) != 0 || syncFile(file_) != 0) {
         error = i18n::tr(i18n::TextId::FileFlushFailed);
         return false;
     }
@@ -895,7 +906,7 @@ bool StateStore::saveInstallJournal(const NspInstallJournal& journal, std::strin
     }
     data << "]}";
     const std::string encoded = data.str();
-    const bool wrote = std::fwrite(encoded.data(), 1, encoded.size(), output) == encoded.size() && std::fflush(output) == 0 && ::fsync(::fileno(output)) == 0;
+    const bool wrote = std::fwrite(encoded.data(), 1, encoded.size(), output) == encoded.size() && std::fflush(output) == 0 && syncFile(output) == 0;
     std::fclose(output);
     if (!wrote) { error = i18n::tr(i18n::TextId::JournalSyncFailed); return false; }
     if (!replaceWithBackup(temporary, current, backup, error)) return false;

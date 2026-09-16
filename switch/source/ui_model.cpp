@@ -1,75 +1,143 @@
 #include "switchdrive/ui_model.hpp"
+#include "switchdrive/i18n.hpp"
+
+#include <algorithm>
+#include <cstdio>
 
 namespace switchdrive::ui {
 
-int MenuFocus::move(Direction direction, size_t count, int section, size_t sections) {
-    if (!count) { card = 0; sidebar = true; }
-    else if (card >= count) card = count - 1;
-    if (sidebar) {
-        if (direction == Direction::Right && count) sidebar = false;
-        if (section >= 0 && sections && (direction == Direction::Up || direction == Direction::Down))
-            return static_cast<int>(moveSelection(static_cast<size_t>(section), sections, direction == Direction::Up ? -1 : 1));
-        return -1;
+namespace {
+
+std::string accountName(const State& state) {
+    for (const auto& account : state.accounts)
+        if (account.id == state.lastAccountId) return account.email;
+    return i18n::tr(i18n::TextId::NoAccountConnected);
+}
+
+std::string providerName(const State& state) {
+    for (const auto& provider : state.providers) {
+        if (provider.id != state.activeProviderId) continue;
+        return provider.kind == ProviderKind::GoogleDrive
+            ? i18n::tr(i18n::TextId::MyDrive)
+            : provider.name;
     }
-    switch (direction) {
-        case Direction::Left: if (card % 2) --card; else sidebar = true; break;
-        case Direction::Right: if (card % 2 == 0 && card + 1 < count) ++card; break;
-        case Direction::Up: if (card >= 2) card -= 2; break;
-        case Direction::Down:
-            if ((card / 2 + 1) * 2 < count) card = card + 2 < count ? card + 2 : count - 1;
-            break;
+    return i18n::tr(i18n::TextId::MyDrive);
+}
+
+std::string itemDetail(const LibraryItem& item) {
+    if (item.nspInstallState == NspInstallState::Installed)
+        return i18n::tr(i18n::TextId::ManagedNspInstalled);
+    if (item.localState != LocalState::Present)
+        return i18n::tr(i18n::TextId::RemovedAfterInstall);
+    char text[64]{};
+    std::snprintf(text, sizeof(text), i18n::tr(i18n::TextId::FileSize),
+        static_cast<double>(item.size) / (1024.0 * 1024.0));
+    return text;
+}
+
+} // namespace
+
+HomeModel makeHomeModel(const State& state, bool appletMode, bool networkReady) {
+    HomeModel model;
+    model.account = accountName(state);
+    model.provider = providerName(state);
+    model.activeTasks = static_cast<size_t>(std::count_if(state.tasks.begin(), state.tasks.end(), [](const Task& task) {
+        return task.state == TaskState::Queued || task.state == TaskState::Downloading ||
+            task.state == TaskState::Verifying || task.state == TaskState::Installing || task.state == TaskState::Paused;
+    }));
+    model.libraryItems = state.library.size();
+    model.appletMode = appletMode;
+    model.networkReady = networkReady;
+    return model;
+}
+
+LibraryModel makeLibraryModel(const State& state, bool appletMode) {
+    LibraryModel model;
+    model.appletMode = appletMode;
+    model.entries.reserve(state.library.size());
+    for (const auto& item : state.library) {
+        const bool available = item.localState == LocalState::Present && LocalFile::exists(item.localPath, item.storageKind);
+        const bool managed = item.installed == InstallKind::Nsp &&
+            item.nspInstallState == NspInstallState::Installed && !item.nspMetaId.empty();
+        const bool installable = isInstallablePackage(item.name) || isNro(item.name);
+        model.entries.push_back({
+            item.id, item.name, itemDetail(item), available, installable,
+            item.installed != InstallKind::None, managed,
+            available && installable && !appletMode,
+            available,
+            managed && !appletMode,
+        });
     }
-    return -1;
+    return model;
 }
 
-int MenuFocus::activate(size_t count) {
-    if (!count) return -1;
-    if (sidebar) { sidebar = false; return -1; }
-    if (card >= count) card = count - 1;
-    return static_cast<int>(card);
+SettingsModel makeSettingsModel(const State& state) {
+    SettingsModel model;
+    model.account = accountName(state);
+    model.language = std::string(i18n::languageName(i18n::parseLanguage(state.language)));
+    model.languageCode = std::string(i18n::languageCode(i18n::parseLanguage(state.language)));
+    model.deleteAfterInstall = state.deleteAfterInstall;
+    const auto home = std::find_if(state.providers.begin(), state.providers.end(), [](const ProviderConfig& provider) {
+        return provider.kind == ProviderKind::HomeStorage;
+    });
+    model.homeStorage = home == state.providers.end()
+        ? i18n::tr(i18n::TextId::NoStorageFound)
+        : home->name;
+    return model;
 }
 
-uint64_t DirectionRepeat::update(uint64_t directions, uint64_t milliseconds) {
-    if (directions != held) {
-        held = directions;
-        next = milliseconds + 350;
-        return held;
-    }
-    if (!held || milliseconds < next) return 0;
-    next = milliseconds + 100;
-    return held;
+uint64_t OperationGate::start(OperationPhase phase, std::string title, std::string message, bool cancellable) {
+    std::scoped_lock lock(mutex_);
+    if (snapshot_.busy) return 0;
+    snapshot_ = {phase, std::move(title), std::move(message), 0, 0, 0, 0,
+        nextGeneration_++, true, cancellable, false};
+    return snapshot_.generation;
 }
 
-HitBox rowBounds(size_t visibleIndex, bool applet) {
-    return {292, (applet ? 220 : 166) + static_cast<int>(visibleIndex) * 68, 936, 62};
+bool OperationGate::update(uint64_t generation, uint64_t current, uint64_t total, double bytesPerSecond, uint64_t etaSeconds) {
+    std::scoped_lock lock(mutex_);
+    if (!snapshot_.busy || snapshot_.generation != generation) return false;
+    snapshot_.current = current;
+    snapshot_.total = total;
+    snapshot_.bytesPerSecond = bytesPerSecond;
+    snapshot_.etaSeconds = etaSeconds;
+    return true;
 }
 
-int touchedRow(int x, int y, size_t selected, size_t count, bool applet) {
-    const size_t visible = applet ? 5 : 6;
-    const size_t first = viewportStart(selected, count, visible);
-    for (size_t index = first; index < count && index < first + visible; ++index)
-        if (hitTest(rowBounds(index - first, applet), x, y)) return static_cast<int>(index);
-    return -1;
+bool OperationGate::setPhase(uint64_t generation, OperationPhase phase, std::string message, bool cancellable) {
+    std::scoped_lock lock(mutex_);
+    if (!snapshot_.busy || snapshot_.generation != generation) return false;
+    snapshot_.phase = phase;
+    snapshot_.message = std::move(message);
+    snapshot_.cancellable = cancellable;
+    return true;
 }
 
-bool hitTest(HitBox box, int x, int y) {
-    return x >= box.x && y >= box.y && x < box.x + box.width && y < box.y + box.height;
+bool OperationGate::finish(uint64_t generation, OperationPhase phase, std::string message) {
+    std::scoped_lock lock(mutex_);
+    if (!snapshot_.busy || snapshot_.generation != generation) return false;
+    snapshot_.phase = phase;
+    snapshot_.message = std::move(message);
+    snapshot_.busy = false;
+    snapshot_.cancellable = false;
+    return true;
 }
 
-size_t moveSelection(size_t selected, size_t count, int delta, bool wrap) {
-    if (!count) return 0;
-    if (delta < 0) {
-        const size_t amount = static_cast<size_t>(-delta);
-        return wrap ? (selected + count - amount % count) % count : (amount > selected ? 0 : selected - amount);
-    }
-    const size_t amount = static_cast<size_t>(delta);
-    return wrap ? (selected + amount) % count : (selected + amount >= count ? count - 1 : selected + amount);
+bool OperationGate::requestCancel() {
+    std::scoped_lock lock(mutex_);
+    if (!snapshot_.busy || !snapshot_.cancellable) return false;
+    snapshot_.cancelRequested = true;
+    return true;
 }
 
-size_t viewportStart(size_t selected, size_t count, size_t visible) {
-    if (!visible || count <= visible) return 0;
-    const size_t maximum = count - visible;
-    return selected >= visible ? (selected - visible + 1 > maximum ? maximum : selected - visible + 1) : 0;
+bool OperationGate::shouldContinue(uint64_t generation) const {
+    std::scoped_lock lock(mutex_);
+    return snapshot_.busy && snapshot_.generation == generation && !snapshot_.cancelRequested;
+}
+
+OperationSnapshot OperationGate::snapshot() const {
+    std::scoped_lock lock(mutex_);
+    return snapshot_;
 }
 
 } // namespace switchdrive::ui

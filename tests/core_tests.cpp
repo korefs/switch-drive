@@ -353,59 +353,38 @@ int main() {
     // format information against an independently implemented QR encoder.
     assert(qrHash == 4030055473U);
     assert(!qr::encode(std::string(214, 'a')));
-    assert(ui::hitTest({10, 10, 52, 52}, 61, 61) && !ui::hitTest({10, 10, 52, 52}, 62, 62));
-    assert(ui::moveSelection(0, 4, -1) == 3 && ui::moveSelection(3, 4, 1) == 0);
-    assert(ui::moveSelection(0, 4, -1, false) == 0 && ui::moveSelection(3, 4, 1, false) == 3);
-    assert(ui::viewportStart(0, 20, 13) == 0 && ui::viewportStart(12, 20, 13) == 0 && ui::viewportStart(13, 20, 13) == 1 && ui::viewportStart(19, 20, 13) == 7);
-    // Touch coordinates use the same row geometry as the renderer, including
-    // applet banners, scrolling, row gaps, and out-of-bounds taps.
-    assert(ui::touchedRow(300, 170, 0, 20, false) == 0);
-    assert(ui::touchedRow(300, 170, 10, 20, false) == 5);
-    assert(ui::touchedRow(300, 224, 0, 20, true) == 0);
-    assert(ui::touchedRow(300, 170, 0, 20, true) == -1);
-    assert(ui::touchedRow(300, 230, 0, 20, false) == -1);
-    assert(ui::touchedRow(1240, 170, 0, 20, false) == -1);
-    assert(ui::touchedRow(300, 170, 0, 0, false) == -1);
-    assert(ui::touchedRow(300, 566, 19, 20, true) == -1);
-    // Home/Settings use a two-column grid with an incomplete last row.
-    // A must activate whichever card the Joy-Con selected, including X/Y cards.
-    ui::MenuFocus focus;
-    const std::array<int, 3> cardActions{1, 4, 8};
-    assert(focus.activate(3) == 0);
-    assert(focus.move(ui::Direction::Right, 3, 0, 4) == -1 && focus.card == 1);
-    assert(cardActions[focus.activate(3)] == 4);
-    focus.move(ui::Direction::Down, 3, 0, 4);
-    assert(focus.card == 2 && cardActions[focus.activate(3)] == 8);
-    focus.move(ui::Direction::Right, 3, 0, 4);
-    focus.move(ui::Direction::Down, 3, 0, 4);
-    assert(focus.card == 2); // No phantom fourth card.
-    focus.move(ui::Direction::Up, 3, 0, 4);
-    assert(focus.card == 0);
-    focus.move(ui::Direction::Left, 3, 0, 4);
-    assert(focus.sidebar);
-    assert(focus.move(ui::Direction::Up, 3, 0, 4) == 3);
-    assert(focus.move(ui::Direction::Down, 3, 3, 4) == 0);
-    assert(focus.activate(3) == -1 && !focus.sidebar);
-    assert(focus.activate(3) == 0);
-    focus.move(ui::Direction::Right, 1, 1, 4);
-    focus.move(ui::Direction::Down, 1, 1, 4);
-    assert(focus.card == 0 && focus.activate(1) == 0);
-    focus.move(ui::Direction::Left, 1, 1, 4);
-    focus.move(ui::Direction::Right, 1, 1, 4);
-    assert(!focus.sidebar);
-    assert(focus.activate(0) == -1);
-    focus = {2, false};
-    assert(focus.activate(1) == 0); // A smaller page clamps old focus.
-    ui::DirectionRepeat repeat;
-    assert(repeat.update(1, 1000) == 1);
-    assert(repeat.update(1, 1349) == 0);
-    assert(repeat.update(1, 1350) == 1);
-    assert(repeat.update(1, 1449) == 0);
-    assert(repeat.update(1, 1450) == 1);
-    assert(repeat.update(2, 1460) == 2); // Direction change responds immediately.
-    assert(repeat.update(0, 1470) == 0);
-    assert(repeat.update(2, 1480) == 2); // Releasing resets the initial delay.
-    assert(repeat.update(2, 1700) == 0);
+    State screenState;
+    screenState.accounts.push_back({"account", "player@example.com", "Player"});
+    screenState.lastAccountId = "account";
+    screenState.deleteAfterInstall = false;
+    screenState.tasks.push_back({});
+    screenState.tasks.back().state = TaskState::Paused;
+    LibraryItem screenItem;
+    screenItem.id = "library-item";
+    screenItem.name = "Example.nsp";
+    screenItem.localPath = (fs::temp_directory_path() / "switch-drive-ui-model-missing.nsp").string();
+    screenItem.localState = LocalState::Present;
+    screenItem.size = 1024;
+    screenState.library.push_back(screenItem);
+    const auto homeModel = ui::makeHomeModel(screenState, true, false);
+    assert(homeModel.account == "player@example.com" && homeModel.activeTasks == 1 &&
+        homeModel.libraryItems == 1 && homeModel.appletMode && !homeModel.networkReady);
+    const auto libraryModel = ui::makeLibraryModel(screenState, true);
+    assert(libraryModel.entries.size() == 1 && !libraryModel.entries[0].available &&
+        !libraryModel.entries[0].canInstall && !libraryModel.entries[0].canUninstall);
+    const auto settingsModel = ui::makeSettingsModel(screenState);
+    assert(settingsModel.account == "player@example.com" && settingsModel.languageCode == "en-US" &&
+        !settingsModel.deleteAfterInstall);
+    ui::OperationGate gate;
+    const auto generation = gate.start(ui::OperationPhase::Downloading, "transfer", "starting", true);
+    assert(generation != 0 && gate.start(ui::OperationPhase::Installing, "other", "", false) == 0);
+    assert(gate.update(generation, 25, 100, 50, 2));
+    auto operation = gate.snapshot();
+    assert(operation.busy && operation.current == 25 && operation.total == 100 && operation.etaSeconds == 2);
+    assert(gate.requestCancel() && !gate.shouldContinue(generation));
+    assert(!gate.update(generation + 1, 50, 100));
+    assert(gate.finish(generation, ui::OperationPhase::Paused, "paused"));
+    assert(!gate.snapshot().busy && gate.snapshot().phase == ui::OperationPhase::Paused);
     for (const auto language : {Language::EnUs, Language::PtBr, Language::EsEs}) {
         setLanguage(language);
         for (const auto id : {TextId::ButtonA, TextId::ButtonX, TextId::ButtonY,
@@ -414,7 +393,10 @@ int main() {
                 TextId::SettingsSubtitle, TextId::NetworkUnavailable,
                 TextId::AutoCleanup, TextId::Ellipsis, TextId::ControllerReady,
                 TextId::ControllerMissing, TextId::InputUnfocused,
-                TextId::AppVersion}) assert(std::strlen(tr(id)) > 0);
+                TextId::AppVersion, TextId::ButtonL, TextId::ButtonR,
+                TextId::Download, TextId::DownloadAndInstall, TextId::Back,
+                TextId::RestartRequired, TextId::ExitConfirm,
+                TextId::ExitActiveConfirm}) assert(std::strlen(tr(id)) > 0);
     }
     assert(parseLanguage("invalid") == Language::EnUs);
     setLanguage(Language::EnUs);

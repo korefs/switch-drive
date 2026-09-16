@@ -73,13 +73,14 @@ enum class TextId {
     ButtonA, ButtonX, ButtonY, Folder, FileSize, HomeSubtitle, FilesSubtitle,
     LibrarySubtitle, SettingsSubtitle, NetworkUnavailable, AutoCleanup, Ellipsis,
     ControllerReady, ControllerMissing, InputUnfocused, AppVersion,
-    PreparingDownload, VerifyingDownload, DownloadPauseHint,
+    PreparingDownload, LoadingFiles, VerifyingDownload, DownloadPauseHint,
     DeleteDownload, DeleteDownloadWarning, LibraryInstalledHint,
     DownloadRemovalPending, DownloadRemovalUnsafePath,
     StorageProviders, HomeStorage, DetectNetwork, ManualSetup, ServerAddress,
     Username, Password, DetectingStorage, NoStorageFound, InvalidAddress,
     HomeBrowseHint, HideCatalogEntry, HideCatalogConfirm, ProviderConnected,
-    ButtonZL,
+    ButtonZL, ButtonL, ButtonR, Download, DownloadAndInstall, Back,
+    RestartRequired, ExitConfirm, ExitActiveConfirm,
     Count
 };
 

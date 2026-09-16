@@ -241,6 +241,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("Waiting for input focus", "Aguardando foco de controle", "Esperando el foco de control") \
  X("Version 0.2.6", "Versão 0.2.6", "Versión 0.2.6") \
  X("Preparing download…", "Preparando download…", "Preparando descarga…") \
+ X("Loading files…", "Carregando arquivos…", "Cargando archivos…") \
  X("Verifying downloaded file…", "Verificando arquivo baixado…", "Verificando archivo descargado…") \
  X("B: pause download", "B: pausar download", "B: pausar descarga") \
  X("Delete download", "Excluir download", "Eliminar descarga") \
@@ -264,7 +265,15 @@ using Catalog = std::array<const char*, textCount()>;
  X("Hide catalog entry", "Ocultar item do catálogo", "Ocultar elemento del catálogo") \
  X("Hide this item from Home Storage? The PC file will not be deleted.", "Ocultar este item do Home Storage? O arquivo do PC não será excluído.", "¿Ocultar este elemento de Home Storage? El archivo del PC no se eliminará.") \
  X("Home Storage connected: %s", "Home Storage conectado: %s", "Home Storage conectado: %s") \
- X("ZL", "ZL", "ZL")
+ X("ZL", "ZL", "ZL") \
+ X("L", "L", "L") \
+ X("R", "R", "R") \
+ X("Download", "Baixar", "Descargar") \
+ X("Download and install", "Baixar e instalar", "Descargar e instalar") \
+ X("Back", "Voltar", "Volver") \
+ X("Language changes will be applied on the next launch.", "A mudança de idioma será aplicada na próxima inicialização.", "El cambio de idioma se aplicará en el próximo inicio.") \
+ X("Close Switch Drive?", "Fechar o Switch Drive?", "¿Cerrar Switch Drive?") \
+ X("A transfer or installation is active. Cancel it and close Switch Drive?", "Há uma transferência ou instalação ativa. Cancelar e fechar o Switch Drive?", "Hay una transferencia o instalación activa. ¿Cancelarla y cerrar Switch Drive?")
 
 #define EN(en, pt, es) en,
 constexpr const char* kEnglishKeys[] = { SD_TEXTS(EN) SD_HOME_TEXTS(EN) };
