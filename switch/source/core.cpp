@@ -59,7 +59,6 @@ TaskState parseTaskState(const std::string& value) {
 const char* localStateName(LocalState state) {
     switch (state) {
         case LocalState::Present: return "present";
-        case LocalState::RemovedAfterInstall: return "removedAfterInstall";
         case LocalState::Missing: return "missing";
         case LocalState::NotDownloaded: return "notDownloaded";
     }
@@ -68,18 +67,8 @@ const char* localStateName(LocalState state) {
 
 LocalState parseLocalState(const std::string& value) {
     if (value == "present") return LocalState::Present;
-    if (value == "removedAfterInstall") return LocalState::RemovedAfterInstall;
     if (value == "missing") return LocalState::Missing;
     return LocalState::NotDownloaded;
-}
-
-const char* installKindName(InstallKind kind) {
-    switch (kind) {
-        case InstallKind::Nro: return "nro";
-        case InstallKind::Nsp: return "nsp";
-        case InstallKind::None: return "none";
-    }
-    return "none";
 }
 
 const char* nspKindName(NspContentKind kind) {
@@ -98,31 +87,6 @@ NspContentKind parseNspKind(const std::string& value) {
 }
 const char* nspStorageName(NspInstallStorage storage) { return storage == NspInstallStorage::InternalUser ? "internal" : "sd"; }
 NspInstallStorage parseNspStorage(const std::string& value) { return value == "internal" ? NspInstallStorage::InternalUser : NspInstallStorage::SdCard; }
-const char* nspStateName(NspInstallState state) {
-    switch (state) {
-        case NspInstallState::Pending: return "pending";
-        case NspInstallState::Installing: return "installing";
-        case NspInstallState::Installed: return "installed";
-        case NspInstallState::Failed: return "failed";
-        case NspInstallState::Unverified: return "unverified";
-        default: return "none";
-    }
-}
-NspInstallState parseNspState(const std::string& value) {
-    if (value == "pending") return NspInstallState::Pending;
-    if (value == "installing") return NspInstallState::Installing;
-    if (value == "installed") return NspInstallState::Installed;
-    if (value == "failed") return NspInstallState::Failed;
-    if (value == "unverified") return NspInstallState::Unverified;
-    return NspInstallState::None;
-}
-
-InstallKind parseInstallKind(const std::string& value) {
-    if (value == "nro") return InstallKind::Nro;
-    if (value == "nsp") return InstallKind::Nsp;
-    return InstallKind::None;
-}
-
 const char* providerKindName(ProviderKind kind) { return kind == ProviderKind::GoogleDrive ? "google-drive" : "home-storage"; }
 ProviderKind parseProviderKind(const std::string& value) { return value == "google-drive" ? ProviderKind::GoogleDrive : ProviderKind::HomeStorage; }
 
@@ -333,8 +297,6 @@ const char* nspContentKindName(NspContentKind kind) {
 const char* nspInstallStorageName(NspInstallStorage storage) {
     return i18n::tr(storage == NspInstallStorage::InternalUser ? i18n::TextId::InternalStorage : i18n::TextId::SdCard);
 }
-const char* nspInstallStateName(NspInstallState state) { return nspStateName(state); }
-
 NspInstallDecision decideNspInstall(const NspPackageInfo& package, const std::vector<InstalledNspInfo>& installed) {
     if (package.kind == NspContentKind::Unknown || package.metaId.empty()) return NspInstallDecision::Unsupported;
     uint32_t highest = 0;
@@ -673,18 +635,17 @@ State StateStore::load() {
     if (!input.good()) return state;
     const std::string json((std::istreambuf_iterator<char>(input)), {});
     const int schemaVersion = static_cast<int>(numberField(json, "schemaVersion"));
-    if (schemaVersion < 1 || schemaVersion > 5) return state;
+    if (schemaVersion < 1 || schemaVersion > 6) return state;
 
-    state.schemaVersion = 5;
+    state.schemaVersion = 6;
     state.serviceUrl = stringField(json, "serviceUrl");
     state.consolePublicKey = stringField(json, "consolePublicKey");
     state.sessionToken = stringField(json, "sessionToken");
     state.lastAccountId = stringField(json, "lastAccountId");
-    state.lastFolderId = stringField(json, "lastFolderId");
+    const std::string legacyLastFolderId = stringField(json, "lastFolderId");
     state.activeProviderId = schemaVersion >= 5 ? stringField(json, "activeProviderId") : "google-drive";
     if (state.activeProviderId.empty()) state.activeProviderId = "google-drive";
     state.language = std::string(i18n::languageCode(i18n::parseLanguage(stringField(json, "language"))));
-    state.deleteAfterInstall = boolField(json, "deleteAfterInstall", true);
 
     for (const auto& row : objectRows(json, "accounts")) {
         Account account{stringField(row, "id"), stringField(row, "email"), stringField(row, "displayName")};
@@ -702,6 +663,13 @@ State StateStore::load() {
         }
         if (std::none_of(state.providers.begin(), state.providers.end(), [](const ProviderConfig& p){ return p.kind == ProviderKind::GoogleDrive; })) state.providers.insert(state.providers.begin(),{"google-drive","","","","root",ProviderKind::GoogleDrive,false});
     }
+    if (!legacyLastFolderId.empty()) {
+        const auto google = std::find_if(state.providers.begin(), state.providers.end(), [](const ProviderConfig& provider) {
+            return provider.kind == ProviderKind::GoogleDrive;
+        });
+        if (google != state.providers.end() && (google->lastFolderId.empty() || google->lastFolderId == "root"))
+            google->lastFolderId = legacyLastFolderId;
+    }
     for (const auto& row : objectRows(json, "library")) {
         LibraryItem item;
         item.id = stringField(row, "id");
@@ -714,25 +682,12 @@ State StateStore::load() {
         item.sha256 = stringField(row, "sha256");
         item.size = numberField(row, "size");
         item.localState = parseLocalState(stringField(row, "localState"));
-        item.installed = parseInstallKind(stringField(row, "installed"));
         item.storageKind = stringField(row, "storageKind") == "concatenated" ? StorageKind::Concatenated : StorageKind::Regular;
-        item.installedPath = stringField(row, "installedPath");
-        item.installedContentId = stringField(row, "installedContentId");
-        if (schemaVersion >= 3) {
-            item.nspContentKind = parseNspKind(stringField(row, "nspContentKind"));
-            item.nspStorage = parseNspStorage(stringField(row, "nspStorage"));
-            item.nspInstallState = parseNspState(stringField(row, "nspInstallState"));
-            item.nspMetaId = stringField(row, "nspMetaId");
-            item.nspBaseTitleId = stringField(row, "nspBaseTitleId");
-            item.nspVersion = static_cast<uint32_t>(numberField(row, "nspVersion"));
-        } else if (item.installed == InstallKind::Nsp) {
-            // v2 never recorded enough identity to safely remove installed NSPs.
-            item.nspInstallState = NspInstallState::Unverified;
-        }
-        const bool installed = item.installed != InstallKind::None ||
-            item.nspInstallState == NspInstallState::Installed ||
-            item.nspInstallState == NspInstallState::Unverified;
-        if (!item.id.empty() && !installed) state.library.push_back(std::move(item));
+        // v1-v5 could retain title-install metadata in the Library. In v6 the
+        // Library represents package files only, so preserve every possible
+        // local package except one explicitly recorded as already deleted.
+        if (!item.id.empty() && stringField(row, "localState") != "removedAfterInstall")
+            state.library.push_back(std::move(item));
     }
     if (schemaVersion >= 2) {
         for (const auto& row : objectRows(json, "tasks")) {
@@ -751,10 +706,8 @@ State StateStore::load() {
             task.committedBytes = numberField(row, "committedBytes");
             task.state = parseTaskState(stringField(row, "state"));
             task.localState = parseLocalState(stringField(row, "localState"));
-            task.installKind = parseInstallKind(stringField(row, "installKind"));
             task.storageKind = stringField(row, "storageKind") == "concatenated" ? StorageKind::Concatenated : StorageKind::Regular;
             task.installAfterDownload = boolField(row, "installAfterDownload", false);
-            task.deleteAfterInstall = boolField(row, "deleteAfterInstall", true);
             task.error = stringField(row, "error");
             if (!task.id.empty()) state.tasks.push_back(std::move(task));
         }
@@ -778,14 +731,12 @@ bool StateStore::save(const State& state, std::string& error) {
         return false;
     }
     const std::string language(i18n::languageCode(i18n::parseLanguage(state.language)));
-    output << "{\"schemaVersion\":5,\"serviceUrl\":\"" << escape(state.serviceUrl)
+    output << "{\"schemaVersion\":6,\"serviceUrl\":\"" << escape(state.serviceUrl)
            << "\",\"consolePublicKey\":\"" << escape(state.consolePublicKey)
            << "\",\"sessionToken\":\"" << escape(state.sessionToken)
            << "\",\"lastAccountId\":\"" << escape(state.lastAccountId)
-           << "\",\"lastFolderId\":\"" << escape(state.lastFolderId)
            << "\",\"activeProviderId\":\"" << escape(state.activeProviderId)
-           << "\",\"language\":\"" << language
-           << "\",\"deleteAfterInstall\":" << (state.deleteAfterInstall ? "true" : "false") << ",\"accounts\":[";
+           << "\",\"language\":\"" << language << "\",\"accounts\":[";
     for (size_t i = 0; i < state.accounts.size(); ++i) {
         const auto& account = state.accounts[i];
         if (i) output << ',';
@@ -810,9 +761,8 @@ bool StateStore::save(const State& state, std::string& error) {
                << "\",\"revision\":\"" << escape(task.revision) << "\",\"etag\":\"" << escape(task.etag)
                << "\",\"expectedSize\":" << task.expectedSize << ",\"committedBytes\":" << task.committedBytes
                << ",\"state\":\"" << taskStateName(task.state) << "\",\"localState\":\"" << localStateName(task.localState)
-               << "\",\"installKind\":\"" << installKindName(task.installKind) << "\",\"storageKind\":\"" << storageKindName(task.storageKind)
+               << "\",\"storageKind\":\"" << storageKindName(task.storageKind)
                << "\",\"installAfterDownload\":" << (task.installAfterDownload ? "true" : "false")
-               << ",\"deleteAfterInstall\":" << (task.deleteAfterInstall ? "true" : "false")
                << ",\"error\":\"" << escape(task.error) << "\"}";
     }
     output << "],\"library\":[";
@@ -823,11 +773,7 @@ bool StateStore::save(const State& state, std::string& error) {
                << "\",\"remoteId\":\"" << escape(item.remoteId) << "\",\"name\":\"" << escape(item.name)
                << "\",\"localPath\":\"" << escape(item.localPath) << "\",\"md5\":\"" << escape(item.md5) << "\",\"sha256\":\"" << escape(item.sha256)
                << "\",\"size\":" << item.size << ",\"localState\":\"" << localStateName(item.localState)
-               << "\",\"installed\":\"" << installKindName(item.installed) << "\",\"storageKind\":\"" << storageKindName(item.storageKind)
-               << "\",\"installedPath\":\"" << escape(item.installedPath) << "\",\"installedContentId\":\"" << escape(item.installedContentId)
-               << "\",\"nspContentKind\":\"" << nspKindName(item.nspContentKind) << "\",\"nspStorage\":\"" << nspStorageName(item.nspStorage)
-               << "\",\"nspInstallState\":\"" << nspStateName(item.nspInstallState) << "\",\"nspMetaId\":\"" << escape(item.nspMetaId)
-               << "\",\"nspBaseTitleId\":\"" << escape(item.nspBaseTitleId) << "\",\"nspVersion\":" << item.nspVersion << "}";
+               << "\",\"storageKind\":\"" << storageKindName(item.storageKind) << "\"}";
     }
     output << "]}";
     output.flush();
@@ -855,7 +801,6 @@ bool StateStore::loadInstallJournal(NspInstallJournal& journal, std::string& err
     journal.localPath = stringField(json, "localPath");
     journal.phase = stringField(json, "phase");
     journal.targetStorage = parseNspStorage(stringField(json, "targetStorage"));
-    journal.deletePackage = boolField(json, "deletePackage", false);
     journal.ticketWasPresent = boolField(json, "ticketWasPresent", false);
     journal.ticketImported = boolField(json, "ticketImported", false);
     journal.package.kind = parseNspKind(stringField(json, "kind"));
@@ -867,14 +812,6 @@ bool StateStore::loadInstallJournal(NspInstallJournal& journal, std::string& err
         content.id = stringField(row, "id"); content.placeholderId = stringField(row, "placeholderId");
         content.created = boolField(row, "created", false);
         if (!content.id.empty()) journal.contents.push_back(std::move(content));
-    }
-    for (const auto& row : objectRows(json, "previous")) {
-        InstalledNspInfo previous;
-        previous.present = true;
-        previous.metaId = stringField(row, "metaId"); previous.baseTitleId = stringField(row, "baseTitleId");
-        previous.version = static_cast<uint32_t>(numberField(row, "version"));
-        previous.kind = parseNspKind(stringField(row, "kind")); previous.storage = parseNspStorage(stringField(row, "storage"));
-        if (!previous.metaId.empty()) journal.previous.push_back(std::move(previous));
     }
     if (journal.operation.empty() || journal.package.metaId.empty()) { error = i18n::tr(i18n::TextId::JournalIncomplete); return false; }
     return true;
@@ -892,7 +829,7 @@ bool StateStore::saveInstallJournal(const NspInstallJournal& journal, std::strin
     std::ostringstream data;
     data << "{\"journalVersion\":1,\"operation\":\"" << escape(journal.operation) << "\",\"libraryId\":\"" << escape(journal.libraryId)
          << "\",\"localPath\":\"" << escape(journal.localPath) << "\",\"phase\":\"" << escape(journal.phase)
-         << "\",\"targetStorage\":\"" << nspStorageName(journal.targetStorage) << "\",\"deletePackage\":" << (journal.deletePackage ? "true" : "false")
+         << "\",\"targetStorage\":\"" << nspStorageName(journal.targetStorage) << "\""
          << ",\"ticketWasPresent\":" << (journal.ticketWasPresent ? "true" : "false") << ",\"ticketImported\":" << (journal.ticketImported ? "true" : "false")
          << ",\"kind\":\"" << nspKindName(journal.package.kind) << "\",\"metaId\":\"" << escape(journal.package.metaId)
          << "\",\"baseTitleId\":\"" << escape(journal.package.baseTitleId) << "\",\"version\":" << journal.package.version << ",\"contents\":[";
@@ -900,12 +837,6 @@ bool StateStore::saveInstallJournal(const NspInstallJournal& journal, std::strin
         if (i) data << ',';
         const auto& content = journal.contents[i];
         data << "{\"id\":\"" << escape(content.id) << "\",\"placeholderId\":\"" << escape(content.placeholderId) << "\",\"created\":" << (content.created ? "true" : "false") << "}";
-    }
-    data << "],\"previous\":[";
-    for (size_t i = 0; i < journal.previous.size(); ++i) {
-        if (i) data << ',';
-        const auto& previous = journal.previous[i];
-        data << "{\"metaId\":\"" << escape(previous.metaId) << "\",\"baseTitleId\":\"" << escape(previous.baseTitleId) << "\",\"version\":" << previous.version << ",\"kind\":\"" << nspKindName(previous.kind) << "\",\"storage\":\"" << nspStorageName(previous.storage) << "\"}";
     }
     data << "]}";
     const std::string encoded = data.str();

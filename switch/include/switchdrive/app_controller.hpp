@@ -74,7 +74,6 @@ class AppController {
     void checkPairing();
     void cancelPairing();
 
-    void setDeleteAfterInstall(bool enabled);
     void setLanguage(i18n::Language language);
     void discoverHomeStorageServers();
     void configureHomeStorage(const std::string& address, const std::string& username, const std::string& password);

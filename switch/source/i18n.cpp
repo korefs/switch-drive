@@ -72,29 +72,12 @@ using Catalog = std::array<const char*, textCount()>;
  X("A: open  X: download  Y: download and install  L: shared  B: back", "A: abrir  X: baixar  Y: baixar e instalar  L: compartilhados  B: voltar", "A: abrir  X: descargar  Y: descargar e instalar  L: compartidos  B: volver") \
  X("Library", "Biblioteca", "Biblioteca") \
  X("No indexed downloads.", "Nenhum download indexado.", "No hay descargas indexadas.") \
- X("local file", "arquivo local", "archivo local") \
- X("removed after install", "removido após instalar", "eliminado tras instalar") \
- X("managed NSP installed", "NSP gerenciado instalado", "NSP administrado instalado") \
- X("A: install/check  Y: remove  B: back", "A: instalar/verificar  Y: remover  B: voltar", "A: instalar/comprobar  Y: eliminar  B: volver") \
  X("File missing", "Arquivo ausente", "Archivo ausente") \
- X("This file was not found. Remove the shortcut?  X: remove", "Este arquivo não foi encontrado. Deseja excluir o atalho?  X: excluir", "No se encontró este archivo. ¿Eliminar el acceso directo?  X: eliminar") \
- X("Remove shortcut", "Excluir atalho", "Eliminar acceso directo") \
- X("Remove NSP", "Remover NSP", "Eliminar NSP") \
- X("There is no managed NSP to remove.", "Não há NSP gerenciado para remover.", "No hay NSP administrado para eliminar.") \
- X("Updates and DLC will not be removed. Saves are preserved.", "Atualizações e DLC não serão removidos. Os saves serão preservados.", "Las actualizaciones y DLC no se eliminarán. Las partidas se conservarán.") \
- X("X: confirm removal   B: cancel", "X: confirmar remoção   B: cancelar", "X: confirmar eliminación   B: cancelar") \
- X("Removal failed: %s", "Remoção falhou: %s", "La eliminación falló: %s") \
  X("Home", "Início", "Inicio") \
  X("Settings", "Configurações", "Configuración") \
  X("No account connected.", "Nenhuma conta conectada.", "No hay ninguna cuenta conectada.") \
  X("Active account: %s", "Conta ativa: %s", "Cuenta activa: %s") \
  X("A: connect account     X: open files", "A: conectar conta     X: abrir arquivos", "A: conectar cuenta     X: abrir archivos") \
- X("Cleanup after install: %s", "Limpar após instalar: %s", "Limpiar después de instalar: %s") \
- X("yes", "sim", "sí") \
- X("no", "não", "no") \
- X("A: toggle cleanup     X: add account", "A: alternar limpeza     X: adicionar conta", "A: cambiar limpieza     X: añadir cuenta") \
- X("X: add account", "X: adicionar conta", "X: añadir cuenta") \
- X("Y: change language", "Y: trocar idioma", "Y: cambiar idioma") \
  X("Stick / D-pad: move   A: select   B: menu   L/R: section   +: exit", "Analógico / direcional: mover   A: selecionar   B: menu   L/R: seção   +: sair", "Stick / cruceta: mover   A: elegir   B: menú   L/R: sección   +: salir") \
  X("Exit", "Sair", "Salir") \
  X("Language", "Idioma", "Idioma") \
@@ -153,12 +136,6 @@ using Catalog = std::array<const char*, textCount()>;
  X("NSP recovery requires the console", "Recuperação NSP exige o console", "La recuperación NSP requiere la consola") \
  X("NCM unavailable during recovery", "NCM indisponível durante recuperação", "NCM no disponible durante la recuperación") \
  X("Could not verify NSP commit", "não foi possível verificar o commit NSP", "no se pudo verificar la confirmación NSP") \
- X("NSP removal requires the console", "Desinstalação NSP exige o console", "La eliminación NSP requiere la consola") \
- X("Managed content missing", "conteúdo gerenciado ausente", "falta contenido administrado") \
- X("Could not open metadata", "não foi possível abrir metadados", "no se pudieron abrir los metadatos") \
- X("Managed version is no longer installed", "a versão gerenciada não está mais instalada", "la versión administrada ya no está instalada") \
- X("Could not enumerate content to remove", "não foi possível enumerar o conteúdo a remover", "no se pudo enumerar el contenido a eliminar") \
- X("Metadata removal failed; content was preserved", "falha ao remover metadados; o conteúdo foi preservado", "fallo al eliminar metadatos; el contenido se conservó") \
  X("HTTP response did not authorize writing", "resposta HTTP não autorizou escrita", "la respuesta HTTP no autorizó la escritura") \
  X("Server did not confirm download range", "servidor não confirmou a faixa do download", "el servidor no confirmó el rango de descarga") \
  X("Could not record response", "não foi possível registrar a resposta do download", "no se pudo registrar la respuesta de descarga") \
@@ -177,7 +154,6 @@ using Catalog = std::array<const char*, textCount()>;
  X("A: open library (%zu items)", "A: abrir biblioteca (%zu itens)", "A: abrir biblioteca (%zu elementos)") \
  X("%zu items", "%zu itens", "%zu elementos") \
  X("Installing %llu / %llu bytes", "Instalando %llu / %llu bytes", "Instalando %llu / %llu bytes") \
- X(", managed NSP installed", ", NSP gerenciado instalado", ", NSP administrado instalado") \
  X("Partial download lacks remote identity; restart the download", "Parcial sem identidade remota; reinicie o download", "La descarga parcial no tiene identidad remota; reinicia la descarga") \
  X("Insufficient space on microSD", "Espaço insuficiente no microSD", "Espacio insuficiente en microSD") \
  X("Could not seek file", "não foi possível posicionar o arquivo", "no se pudo posicionar el archivo") \
@@ -235,7 +211,6 @@ using Catalog = std::array<const char*, textCount()>;
  X("Your downloads, all in one place.", "Seus downloads, todos em um só lugar.", "Tus descargas, todas en un solo lugar.") \
  X("Make Switch Drive yours.", "Deixe o Switch Drive do seu jeito.", "Configura Switch Drive a tu gusto.") \
  X("Network initialization failed (%08x). Reopen the app to try again.", "Falha ao iniciar a rede (%08x). Reabra o app para tentar novamente.", "Error al iniciar la red (%08x). Abre de nuevo la app para reintentar.") \
- X("Clean up packages", "Limpar pacotes", "Limpiar paquetes") \
  X("…", "…", "…") \
  X("Controller ready", "Controle conectado", "Control conectado") \
  X("Connect a controller", "Conecte um controle", "Conecta un control") \
@@ -247,7 +222,6 @@ using Catalog = std::array<const char*, textCount()>;
  X("B: pause download", "B: pausar download", "B: pausar descarga") \
  X("Delete download", "Excluir download", "Eliminar descarga") \
  X("Delete the downloaded file from microSD? Installed games and saves will not be removed.", "Excluir o arquivo baixado do microSD? Jogos instalados e saves não serão removidos.", "¿Eliminar el archivo descargado de la microSD? No se eliminarán juegos instalados ni partidas.") \
- X("A: install  Y: delete file  X: uninstall  B: back", "A: instalar  Y: excluir arquivo  X: desinstalar  B: voltar", "A: instalar  Y: borrar archivo  X: desinstalar  B: volver") \
  X("Installation recovery is pending. Reopen the app before deleting this download.", "Há uma recuperação de instalação pendente. Reabra o app antes de excluir este download.", "Hay una recuperación de instalación pendiente. Abre de nuevo la app antes de eliminar esta descarga.") \
  X("The file is outside this download's folder; deletion was blocked.", "O arquivo está fora da pasta deste download; a exclusão foi bloqueada.", "El archivo está fuera de la carpeta de esta descarga; se bloqueó su eliminación.")
 

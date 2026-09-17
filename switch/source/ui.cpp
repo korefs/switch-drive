@@ -651,9 +651,6 @@ class SettingsView final : public ObservedBox {
   public:
     explicit SettingsView(AppController& appController) : ObservedBox(appController) {
         setPadding(24, 48, 24, 48);
-        cleanup = new brls::BooleanCell();
-        cleanup->init(i18n::tr(i18n::TextId::AutoCleanup), controller.settingsSnapshot().deleteAfterInstall,
-            [this](bool enabled) { controller.setDeleteAfterInstall(enabled); });
         account = new brls::DetailCell();
         account->setText(i18n::tr(i18n::TextId::ConnectDrive));
         account->registerClickAction([this](brls::View*) { pushPairing(controller); return true; });
@@ -670,7 +667,6 @@ class SettingsView final : public ObservedBox {
         homeStorage = new brls::DetailCell();
         homeStorage->setText(i18n::tr(i18n::TextId::HomeStorage));
         homeStorage->registerClickAction([this](brls::View*) { pushHomeStorage(controller); return true; });
-        addView(cleanup);
         addView(account);
         addView(language);
         addView(homeStorage);
@@ -680,13 +676,11 @@ class SettingsView final : public ObservedBox {
 
     void refresh() override {
         const auto model = controller.settingsSnapshot();
-        cleanup->setOn(model.deleteAfterInstall, false);
         account->setDetailText(model.account);
         homeStorage->setDetailText(model.homeStorage);
     }
 
   private:
-    brls::BooleanCell* cleanup{};
     brls::DetailCell* account{};
     brls::SelectorCell* language{};
     brls::DetailCell* homeStorage{};

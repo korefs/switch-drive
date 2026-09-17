@@ -96,7 +96,6 @@ struct SettingsModel {
     std::string language;
     std::string languageCode;
     std::string homeStorage;
-    bool deleteAfterInstall{};
 };
 
 HomeModel makeHomeModel(const State& state, bool appletMode, bool networkReady);

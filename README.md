@@ -47,8 +47,8 @@ to the microSD card, and optionally install supported packages from the console.
   base game, update, or DLC per package.
 - Downgrade protection, selectable SD/internal installation storage, and
   interrupted-install recovery.
-- Local library for downloaded packages that have not yet been installed, with
-  optional package cleanup after installation.
+- Local library for downloaded packages. Successfully installed packages are
+  deleted automatically; cleanup failures leave them available for manual deletion.
 - Controller and touch navigation in English (US), Portuguese (Brazil), and
   Spanish.
 - Borealis-based interface with the classic Switch sidebar, native focus and
@@ -334,7 +334,9 @@ docker build --target test -t switch-drive-home-storage-tests .
 - Existing content remains registered until replacement metadata commits.
 - The Library never removes installed titles or save data; it only deletes
   downloaded package files.
-- Package cleanup happens only after a confirmed installation.
+- Package cleanup is always attempted after a confirmed installation. A cleanup
+  failure does not turn the installation into a failure and leaves the package in
+  the Library for manual deletion.
 - Home Storage mounts the host library read-only. Hiding an entry changes only
   its SQLite catalog and never deletes the host file.
 

@@ -26,7 +26,7 @@ std::string providerName(const State& state) {
 }
 
 std::string itemDetail(const LibraryItem& item) {
-    if (item.localState != LocalState::Present)
+    if (item.localState != LocalState::Present || !LocalFile::exists(item.localPath, item.storageKind))
         return i18n::tr(i18n::TextId::MissingFile);
     char text[64]{};
     std::snprintf(text, sizeof(text), i18n::tr(i18n::TextId::FileSize),
@@ -114,10 +114,16 @@ LibraryModel makeLibraryModel(const State& state, bool appletMode) {
     for (const auto& item : state.library) {
         const bool available = item.localState == LocalState::Present && LocalFile::exists(item.localPath, item.storageKind);
         const bool installable = isInstallablePackage(item.name) || isNro(item.name);
+        std::string detail = itemDetail(item);
+        const auto task = std::find_if(state.tasks.begin(), state.tasks.end(), [&](const Task& value) {
+            return value.id == item.id;
+        });
+        if (task != state.tasks.end() && task->state == TaskState::Completed && !task->error.empty())
+            detail = task->error;
         model.entries.push_back({
-            item.id, item.name, itemDetail(item), available, installable,
+            item.id, item.name, std::move(detail), available, installable,
             available && installable && !appletMode,
-            available,
+            true,
         });
     }
     return model;
@@ -128,7 +134,6 @@ SettingsModel makeSettingsModel(const State& state) {
     model.account = accountName(state);
     model.language = std::string(i18n::languageName(i18n::parseLanguage(state.language)));
     model.languageCode = std::string(i18n::languageCode(i18n::parseLanguage(state.language)));
-    model.deleteAfterInstall = state.deleteAfterInstall;
     const auto home = std::find_if(state.providers.begin(), state.providers.end(), [](const ProviderConfig& provider) {
         return provider.kind == ProviderKind::HomeStorage;
     });

@@ -54,8 +54,6 @@ bool NroInstaller::install(const fs::path& source, const fs::path& destination, 
     if (!copyLogicalFile(source, StorageKind::Regular, temporary, error)) return false;
     fs::rename(temporary,destination,ec); if(ec){fs::remove(destination,ec);ec.clear();fs::rename(temporary,destination,ec);} if(ec){error=ec.message();return false;} return true;
 }
-bool NroInstaller::uninstall(const fs::path& destination, std::string& error) const { return LocalFile::remove(destination, StorageKind::Regular, error); }
-
 bool NspInstaller::validate(const fs::path& source, StorageKind kind, std::string& error, uint64_t segmentSize) const {
     Pfs0 pfs0; if (!pfs0.open(source, kind, error, segmentSize)) return false;
     size_t metadataCount = 0; bool hasNca = false;
@@ -469,7 +467,7 @@ bool NspInstaller::install(const fs::path& source, StorageKind kind, const NspPa
     if (R_FAILED(rc)) { ncmContentStorageClose(&contentStorage); ncmExit(); error = i18n::tr(i18n::TextId::InstallDestinationOpenFailed); return false; }
     int64_t freeSpace{}; rc = ncmContentStorageGetFreeSpaceSize(&contentStorage, &freeSpace);
     if (R_FAILED(rc) || freeSpace < static_cast<int64_t>(package.totalInstallBytes + metaEntry->size)) { ncmContentMetaDatabaseClose(&database); ncmContentStorageClose(&contentStorage); ncmExit(); error = i18n::tr(i18n::TextId::DestinationNoSpace); return false; }
-    journal.operation = "install"; journal.phase = "prepared"; journal.package = package; journal.targetStorage = destination; journal.previous = installed;
+    journal.operation = "install"; journal.phase = "prepared"; journal.package = package; journal.targetStorage = destination;
     journal.contents.clear();
     std::vector<NspContentEntry> all = package.contents;
     all.push_back({package.metaNcaId, metaEntry->size, static_cast<uint8_t>(NcmContentType_Meta)});
@@ -578,51 +576,11 @@ bool NspInstaller::recover(StateStore& store, NspInstallJournal& journal, bool& 
 #endif
 }
 
-bool NspInstaller::uninstall(const InstalledNspInfo& target, StateStore& store, NspInstallJournal& journal, std::string& error) const {
-#ifndef __SWITCH__
-    (void)target; (void)store; (void)journal; error = i18n::tr(i18n::TextId::UninstallSwitchOnly); return false;
-#else
-    if (!target.present || target.metaId.empty()) { error = i18n::tr(i18n::TextId::ManagedContentMissing); return false; }
-    Result rc = ncmInitialize(); if (R_FAILED(rc)) { error = i18n::tr(i18n::TextId::NcmUnavailable); return false; }
-    const auto storageId = target.storage == NspInstallStorage::InternalUser ? NcmStorageId_BuiltInUser : NcmStorageId_SdCard;
-    NcmContentMetaDatabase database{}; rc = ncmOpenContentMetaDatabase(&database, storageId); if (R_FAILED(rc)) { ncmExit(); error = i18n::tr(i18n::TextId::MetadataOpenFailed); return false; }
-    uint64_t title{}; std::stringstream titleStream; titleStream << std::hex << target.metaId; titleStream >> title;
-    NcmContentMetaKey key{}; key.id = title; key.version = target.version; key.type = target.kind == NspContentKind::BaseGame ? NcmContentMetaType_Application : target.kind == NspContentKind::Update ? NcmContentMetaType_Patch : NcmContentMetaType_AddOnContent; key.install_type = NcmContentInstallType_Full;
-    bool exists{}; if (R_FAILED(ncmContentMetaDatabaseHas(&database, &exists, &key)) || !exists) { ncmContentMetaDatabaseClose(&database); ncmExit(); error = i18n::tr(i18n::TextId::ManagedVersionMissing); return false; }
-    journal = {}; journal.operation = "remove"; journal.phase = "prepared"; journal.package.metaId = target.metaId; journal.package.baseTitleId = target.baseTitleId; journal.package.version = target.version; journal.package.kind = target.kind; journal.targetStorage = target.storage;
-    std::array<NcmContentInfo, 128> oldContents{}; s32 written{};
-    if (R_FAILED(ncmContentMetaDatabaseListContentInfo(&database, &written, oldContents.data(), oldContents.size(), &key, 0))) { ncmContentMetaDatabaseClose(&database); ncmExit(); error = i18n::tr(i18n::TextId::ContentEnumerateFailed); return false; }
-    for (s32 i = 0; i < written; ++i) journal.contents.push_back({hexId(oldContents[static_cast<size_t>(i)].content_id.c, sizeof(oldContents[static_cast<size_t>(i)].content_id.c)), {}, true});
-    if (!store.saveInstallJournal(journal, error)) { ncmContentMetaDatabaseClose(&database); ncmExit(); return false; }
-    appletLockExit(); rc = ncmContentMetaDatabaseRemove(&database, &key); if (R_SUCCEEDED(rc)) rc = ncmContentMetaDatabaseCommit(&database);
-    ncmContentMetaDatabaseClose(&database); ncmExit(); appletUnlockExit();
-    if (R_FAILED(rc)) { error = i18n::tr(i18n::TextId::MetadataRemovalFailed); return false; }
-    journal.phase = "committed"; if (!store.saveInstallJournal(journal, error)) return false;
-    NcmContentStorage contentStorage{}; NcmContentMetaDatabase cleanupDatabase{}; rc = ncmInitialize(); if (R_SUCCEEDED(rc)) rc = ncmOpenContentStorage(&contentStorage, storageId); if (R_SUCCEEDED(rc)) rc = ncmOpenContentMetaDatabase(&cleanupDatabase, storageId);
-    if (R_SUCCEEDED(rc)) {
-        for (const auto& content : journal.contents) {
-            uint8_t bytes[16]{}; if (!hexToBytes(content.id, bytes, sizeof(bytes))) continue;
-            NcmContentId id{}; std::memcpy(id.c, bytes, sizeof(bytes)); bool orphan{};
-            if (R_SUCCEEDED(ncmContentMetaDatabaseLookupOrphanContent(&cleanupDatabase, &orphan, &id, 1)) && orphan) ncmContentStorageDelete(&contentStorage, &id);
-        }
-        ncmContentMetaDatabaseClose(&cleanupDatabase);
-        ncmContentStorageClose(&contentStorage);
-    }
-    ncmExit();
-    return store.clearInstallJournal(error);
-#endif
-}
-
 bool NspInstaller::install(const fs::path& source, StorageKind kind, std::string& contentId, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const {
     NspPackageInfo package; if (!inspect(source, kind, package, error)) return false;
     StateStore store("sdmc:/switch-drive"); NspInstallJournal journal; journal.localPath = source.string();
     const bool result = install(source, kind, package, NspInstallStorage::SdCard, store, journal, std::move(progress), error);
     if (result) contentId = package.metaId;
     return result;
-}
-bool NspInstaller::uninstall(const std::string& contentId, std::string& error) const {
-    InstalledNspInfo target; target.present = true; target.metaId = contentId; target.kind = NspContentKind::BaseGame;
-    StateStore store("sdmc:/switch-drive"); NspInstallJournal journal;
-    return uninstall(target, store, journal, error);
 }
 } // namespace switchdrive
