@@ -258,8 +258,8 @@ The REST contract is documented in [the OpenAPI specification](./docs/openapi.ya
 ### Switch client
 
 Clone recursively, then install devkitPro with `switch-dev`, `switch-curl`,
-`switch-mbedtls`, `switch-zstd`, and `switch-jansson`. The client uses the
-Deko3D Borealis backend and no longer depends on SDL2 or SDL_ttf.
+`switch-mbedtls`, `switch-zstd`, `switch-jansson`, and `switch-glm`. The client
+uses the Deko3D Borealis backend and no longer depends on SDL2 or SDL_ttf.
 
 ```sh
 make
