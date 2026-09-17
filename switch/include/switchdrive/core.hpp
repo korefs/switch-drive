@@ -14,14 +14,12 @@
 namespace switchdrive {
 
 enum class TaskState { Queued, Downloading, Paused, Verifying, Installing, Completed, Failed, Cancelled };
-enum class LocalState { Present, RemovedAfterInstall, Missing, NotDownloaded };
-enum class InstallKind { None, Nro, Nsp };
+enum class LocalState { Present, Missing, NotDownloaded };
 enum class StorageKind { Regular, Concatenated };
 enum class ProviderKind { GoogleDrive, HomeStorage };
 enum class ChecksumKind { None, Md5, Sha256 };
 enum class NspContentKind { Unknown, BaseGame, Update, Dlc };
 enum class NspInstallStorage { SdCard, InternalUser };
-enum class NspInstallState { None, Pending, Installing, Installed, Failed, Unverified };
 enum class NspInstallDecision { Install, AlreadyInstalled, DowngradeBlocked, Unsupported };
 
 constexpr uint64_t kFat32FileLimit = 4ULL * 1024ULL * 1024ULL * 1024ULL;
@@ -44,23 +42,15 @@ struct Task {
     uint64_t expectedSize{}, committedBytes{};
     TaskState state{TaskState::Queued};
     LocalState localState{LocalState::NotDownloaded};
-    InstallKind installKind{InstallKind::None};
     StorageKind storageKind{StorageKind::Regular};
-    bool installAfterDownload{}, deleteAfterInstall{true};
+    bool installAfterDownload{};
     std::string error;
 };
 struct LibraryItem {
     std::string id, providerId, accountId, remoteId, name, localPath, md5, sha256;
     uint64_t size{};
     LocalState localState{LocalState::NotDownloaded};
-    InstallKind installed{InstallKind::None};
     StorageKind storageKind{StorageKind::Regular};
-    std::string installedPath, installedContentId;
-    NspContentKind nspContentKind{NspContentKind::Unknown};
-    NspInstallStorage nspStorage{NspInstallStorage::SdCard};
-    NspInstallState nspInstallState{NspInstallState::None};
-    std::string nspMetaId, nspBaseTitleId;
-    uint32_t nspVersion{};
 };
 
 struct NspContentEntry { std::string id; uint64_t size{}; uint8_t type{}; };
@@ -90,13 +80,11 @@ struct NspInstallJournal {
     NspPackageInfo package;
     NspInstallStorage targetStorage{NspInstallStorage::SdCard};
     std::vector<NspJournalContent> contents;
-    std::vector<InstalledNspInfo> previous;
-    bool deletePackage{}, ticketWasPresent{}, ticketImported{};
+    bool ticketWasPresent{}, ticketImported{};
 };
 struct State {
-    int schemaVersion{5};
-    std::string serviceUrl, consolePublicKey, sessionToken, lastAccountId, lastFolderId, activeProviderId{"google-drive"}, language{"en-US"};
-    bool deleteAfterInstall{true};
+    int schemaVersion{6};
+    std::string serviceUrl, consolePublicKey, sessionToken, lastAccountId, activeProviderId{"google-drive"}, language{"en-US"};
     std::vector<Account> accounts;
     std::vector<ProviderConfig> providers{{"google-drive","","","","root",ProviderKind::GoogleDrive,false}};
     std::vector<Task> tasks;
@@ -117,7 +105,6 @@ StorageKind storageKindForSize(uint64_t size, uint64_t limit = kFat32FileLimit);
 const char* storageKindName(StorageKind kind);
 const char* nspContentKindName(NspContentKind kind);
 const char* nspInstallStorageName(NspInstallStorage storage);
-const char* nspInstallStateName(NspInstallState state);
 NspInstallDecision decideNspInstall(const NspPackageInfo& package, const std::vector<InstalledNspInfo>& installed);
 
 // A logical file can be regular or concatenated. On Switch, concatenated files
@@ -201,7 +188,6 @@ class NroInstaller {
   public:
     bool validate(const std::filesystem::path& source, std::string& error) const;
     bool install(const std::filesystem::path& source, const std::filesystem::path& destination, bool replace, std::string& error) const;
-    bool uninstall(const std::filesystem::path& destination, std::string& error) const;
 };
 
 // The caller owns the mounted filesystem. Implementations own and close their
@@ -228,11 +214,9 @@ class NspInstaller {
     bool parseCnmt(const void* data, size_t size, NspPackageInfo& info, std::string& error) const;
     bool queryInstalled(const NspPackageInfo& package, std::vector<InstalledNspInfo>& installed, std::string& error) const;
     bool install(const std::filesystem::path& source, StorageKind kind, const NspPackageInfo& package, NspInstallStorage destination, StateStore& store, NspInstallJournal& journal, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const;
-    bool recover(StateStore& store, NspInstallJournal& journal, std::string& error) const;
-    bool uninstall(const InstalledNspInfo& target, StateStore& store, NspInstallJournal& journal, std::string& error) const;
+    bool recover(StateStore& store, NspInstallJournal& journal, bool& installCommitted, std::string& error) const;
     bool install(const std::filesystem::path& source, StorageKind kind, std::string& contentId, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const;
     bool install(const std::filesystem::path& source, std::string& contentId, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const { return install(source, StorageKind::Regular, contentId, std::move(progress), error); }
-    bool uninstall(const std::string& contentId, std::string& error) const;
 };
 
 } // namespace switchdrive

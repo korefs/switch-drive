@@ -8,5 +8,5 @@ coverage/
 *.nacp
 *.elf
 *.map
-
+*.log
 ACCEPTANCE.MD

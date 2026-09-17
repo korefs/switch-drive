@@ -18,6 +18,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Install test dependencies
         run: sudo apt-get update && sudo apt-get install --yes libmbedtls-dev libzstd-dev libcurl4-openssl-dev libjansson-dev
       - name: Configure tests
@@ -37,6 +39,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -52,6 +56,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Test in the .NET 10 SDK container stage
         run: docker build --target test --tag switch-drive-home-storage-tests home-storage
       - name: Smoke test the runtime container
@@ -81,6 +87,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Build NRO with devkitPro
         run: |
           docker run --rm --user root \

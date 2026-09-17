@@ -1,684 +1,776 @@
 #include "switchdrive/ui.hpp"
-#include "switchdrive/ui_model.hpp"
+
+#include "switchdrive/app_controller.hpp"
 #include "switchdrive/i18n.hpp"
+#include "switchdrive/network.hpp"
 #include "switchdrive/qr.hpp"
 
-#ifdef __SWITCH__
-#include <switch.h>
-#else
-#include <cstdlib>
-constexpr uint64_t HidNpadButton_A = 1, HidNpadButton_X = 4;
-#endif
-
-#include <SDL.h>
-#include <SDL_ttf.h>
+#include <borealis.hpp>
 
 #include <algorithm>
-#include <array>
-#include <cstdarg>
-#include <chrono>
-#include <cmath>
+#include <atomic>
 #include <cstdio>
-#include <cstring>
-#include <optional>
-#include <sys/stat.h>
-#include <unordered_map>
+#include <functional>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace switchdrive::ui {
 namespace {
 
-constexpr SDL_Color kBackground{0x07, 0x11, 0x1F, 0xFF};
-constexpr SDL_Color kSurface{0x0D, 0x1B, 0x2E, 0xFF};
-constexpr SDL_Color kRaised{0x13, 0x26, 0x3D, 0xFF};
-constexpr SDL_Color kSelected{0x13, 0x3B, 0x51, 0xFF};
-constexpr SDL_Color kWarningSurface{0x3A, 0x35, 0x21, 0xFF};
-constexpr SDL_Color kAccent{0x25, 0xDD, 0xF4, 0xFF};
-constexpr SDL_Color kText{0xF5, 0xFA, 0xFF, 0xFF};
-constexpr SDL_Color kMuted{0x91, 0xA4, 0xBC, 0xFF};
-constexpr SDL_Color kWarning{0xF6, 0xC8, 0x5F, 0xFF};
-constexpr int kWidth = 1280;
-constexpr int kHeight = 720;
-[[maybe_unused]] constexpr const char* kBootLog = "sdmc:/switch-drive/boot.log";
+using Row = std::pair<std::string, std::string>;
 
-void appendDiagnostic(const char* stage, bool reset = false) {
-    #ifdef __SWITCH__
-    mkdir("sdmc:/switch-drive", 0777);
-    std::FILE* output = std::fopen(kBootLog, reset ? "w" : "a");
-    if (!output) return;
-    std::fprintf(output, "%s\n", stage);
-    std::fflush(output);
-    std::fclose(output);
-    #else
-    (void)stage; (void)reset;
-    #endif
+void setActionHintHidden(brls::View* view, brls::ControllerButton button, bool hidden) {
+    const auto found = view->getAction(button);
+    if (found == view->getActions().end() || (*found)->isHidden() == hidden) return;
+    const auto action = *found;
+    view->registerAction(action->getHintText(), button, action->getActionListener(), hidden,
+        action->isAllowRepeating(), action->getSound());
+    view->setActionAvailable(button, action->isAvailable());
 }
 
-std::string stripAnsi(const std::string& value) {
-    std::string output;
-    for (size_t index = 0; index < value.size();) {
-        if (value[index] == '\x1b' && index + 1 < value.size() && value[index + 1] == '[') {
-            index += 2;
-            while (index < value.size() && ((value[index] >= '0' && value[index] <= '9') || value[index] == ';')) ++index;
-            if (index < value.size()) ++index;
-        } else {
-            output += value[index++];
-        }
-    }
-    return output;
+brls::Hints* findHints(brls::View* view) {
+    if (auto* hints = dynamic_cast<brls::Hints*>(view)) return hints;
+    if (auto* box = dynamic_cast<brls::Box*>(view))
+        for (auto* child : box->getChildren())
+            if (auto* hints = findHints(child)) return hints;
+    return nullptr;
 }
 
-void fillRect(SDL_Surface* surface, int x, int y, int width, int height, SDL_Color color) {
-    SDL_Rect rect{x, y, width, height};
-    SDL_FillRect(surface, &rect, SDL_MapRGBA(surface->format, color.r, color.g, color.b, color.a));
+brls::Label* label(const std::string& text, float size = 22, float height = 48) {
+    auto* value = new brls::Label();
+    value->setText(text);
+    value->setFontSize(size);
+    value->setHeight(height);
+    value->setHorizontalAlign(brls::HorizontalAlign::LEFT);
+    value->setVerticalAlign(brls::VerticalAlign::CENTER);
+    value->setSingleLine(true);
+    return value;
 }
 
-void roundedRect(SDL_Surface* surface, int x, int y, int width, int height, int radius, SDL_Color color) {
-    radius = std::min(radius, std::min(width, height) / 2);
-    fillRect(surface, x + radius, y, width - radius * 2, height, color);
-    fillRect(surface, x, y + radius, width, height - radius * 2, color);
-    for (int row = 0; row < radius; ++row) {
-        const float dy = static_cast<float>(radius - row) - 0.5f;
-        const int inset = static_cast<int>(static_cast<float>(radius) - std::sqrt(std::max(0.0f, static_cast<float>(radius * radius) - dy * dy)));
-        fillRect(surface, x + inset, y + row, width - inset * 2, 1, color);
-        fillRect(surface, x + inset, y + height - row - 1, width - inset * 2, 1, color);
-    }
+void confirm(const std::string& message, std::function<void()> accepted) {
+    auto* dialog = new brls::Dialog(message);
+    dialog->addButton(i18n::tr(i18n::TextId::Cancel), [] {});
+    dialog->addButton(i18n::tr(i18n::TextId::Confirm), std::move(accepted));
+    dialog->open();
 }
 
-void drawIcon(SDL_Surface* surface, Icon icon, int x, int y, SDL_Color color) {
-    if (icon == Icon::Folder || icon == Icon::Library) {
-        roundedRect(surface, x + 2, y + 6, 22, 12, 4, color);
-        roundedRect(surface, x + 2, y + 14, 46, 30, 5, color);
-        fillRect(surface, x + 10, y + 24, 30, 3, kSurface);
-    } else if (icon == Icon::Cloud) {
-        roundedRect(surface, x + 9, y + 6, 28, 28, 14, color);
-        roundedRect(surface, x, y + 20, 50, 22, 11, color);
-        fillRect(surface, x + 23, y + 23, 4, 13, kSurface);
-    } else if (icon == Icon::Settings || icon == Icon::Language) {
-        for (int row = 0; row < 3; ++row) {
-            roundedRect(surface, x + 4, y + 9 + row * 13, 40, 3, 1, color);
-            roundedRect(surface, x + (row == 1 ? 28 : 12), y + 5 + row * 13, 10, 11, 4, color);
-        }
-    } else {
-        roundedRect(surface, x + 8, y + 2, 32, 44, 5, color);
-        for (int row = 0; row < 3; ++row) fillRect(surface, x + 15, y + 14 + row * 8, 18, 3, kSurface);
+class FocusDetailCell final : public brls::DetailCell {
+  public:
+    void setFocusAction(std::function<void(size_t)> action) { focusAction = std::move(action); }
+
+    void onFocusGained() override {
+        brls::DetailCell::onFocusGained();
+        const auto index = getIndexPath().row;
+        if (focusAction && index >= 0) focusAction(static_cast<size_t>(index));
     }
+
+  private:
+    std::function<void(size_t)> focusAction;
+};
+
+class ModelDataSource final : public brls::RecyclerDataSource {
+  public:
+    using Rows = std::function<std::vector<Row>()>;
+    using Select = std::function<void(size_t)>;
+    using NearEnd = std::function<void()>;
+    using Focus = std::function<void(size_t)>;
+
+    ModelDataSource(Rows rows, Select select, NearEnd nearEnd = {}, Focus focus = {}, bool showSelectHint = true)
+        : rows_(std::move(rows)), select_(std::move(select)), nearEnd_(std::move(nearEnd)), focus_(std::move(focus)),
+          showSelectHint_(showSelectHint) {}
+
+    int numberOfRows(brls::RecyclerFrame*, int) override { return static_cast<int>(rows_().size()); }
+
+    brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler, brls::IndexPath index) override {
+        auto rows = rows_();
+        auto* cell = static_cast<brls::DetailCell*>(recycler->dequeueReusableCell("detail"));
+        if (!showSelectHint_) setActionHintHidden(cell, brls::BUTTON_A, true);
+        if (auto* focusCell = dynamic_cast<FocusDetailCell*>(cell)) focusCell->setFocusAction(focus_);
+        if (index.row >= 0 && static_cast<size_t>(index.row) < rows.size()) {
+            cell->setText(rows[static_cast<size_t>(index.row)].first);
+            cell->setDetailText(rows[static_cast<size_t>(index.row)].second);
+            if (nearEnd_ && static_cast<size_t>(index.row + 3) >= rows.size()) nearEnd_();
+        }
+        return cell;
+    }
+
+    void didSelectRowAt(brls::RecyclerFrame*, brls::IndexPath index) override {
+        if (index.row >= 0 && select_) select_(static_cast<size_t>(index.row));
+    }
+
+    float heightForRow(brls::RecyclerFrame*, brls::IndexPath) override { return 64; }
+
+  private:
+    Rows rows_;
+    Select select_;
+    NearEnd nearEnd_;
+    Focus focus_;
+    bool showSelectHint_{};
+};
+
+class ObservedBox : public brls::Box {
+  public:
+    explicit ObservedBox(AppController& controller)
+        : brls::Box(brls::Axis::COLUMN), controller(controller), alive(std::make_shared<std::atomic<bool>>(true)),
+          refreshPending(std::make_shared<std::atomic<bool>>(false)) {
+        auto guard = alive;
+        auto pending = refreshPending;
+        subscription = controller.subscribe([this, guard, pending] {
+            if (!guard->load() || pending->exchange(true)) return;
+            brls::sync([this, guard, pending] {
+                pending->store(false);
+                if (guard->load()) refresh();
+            });
+        });
+    }
+
+    ~ObservedBox() override {
+        alive->store(false);
+        controller.unsubscribe(subscription);
+    }
+
+    virtual void refresh() = 0;
+
+  protected:
+    AppController& controller;
+    std::shared_ptr<std::atomic<bool>> lifetimeGuard() const { return alive; }
+
+  private:
+    size_t subscription{};
+    std::shared_ptr<std::atomic<bool>> alive;
+    std::shared_ptr<std::atomic<bool>> refreshPending;
+};
+
+class QrView final : public brls::View {
+  public:
+    void setContent(const std::string& value) {
+        code = qr::encode(value);
+        invalidate();
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height, brls::Style, brls::FrameContext*) override {
+        nvgBeginPath(vg);
+        nvgRect(vg, x, y, width, height);
+        nvgFillColor(vg, nvgRGB(255, 255, 255));
+        nvgFill(vg);
+        if (!code) return;
+        const float quiet = 4;
+        const float scale = std::min(width, height) / (code->size + quiet * 2);
+        const float left = x + (width - scale * code->size) / 2;
+        const float top = y + (height - scale * code->size) / 2;
+        nvgBeginPath(vg);
+        for (int row = 0; row < code->size; ++row)
+            for (int column = 0; column < code->size; ++column)
+                if (code->modules[static_cast<size_t>(row * code->size + column)])
+                    nvgRect(vg, left + column * scale, top + row * scale, scale + 0.25f, scale + 0.25f);
+        nvgFillColor(vg, nvgRGB(0, 0, 0));
+        nvgFill(vg);
+    }
+
+  private:
+    std::optional<qr::Code> code;
+};
+
+class ProgressBar final : public brls::View {
+  public:
+    void setProgress(float value) { progress = std::clamp(value, 0.0f, 1.0f); invalidate(); }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height, brls::Style, brls::FrameContext*) override {
+        nvgBeginPath(vg);
+        nvgRoundedRect(vg, x, y, width, height, height / 2);
+        nvgFillColor(vg, brls::Application::getTheme().getColor("brls/sidebar/separator"));
+        nvgFill(vg);
+        nvgBeginPath(vg);
+        nvgRoundedRect(vg, x, y, width * progress, height, height / 2);
+        nvgFillColor(vg, brls::Application::getTheme().getColor("switchdrive/accent"));
+        nvgFill(vg);
+    }
+
+  private:
+    float progress{};
+};
+
+size_t focusedRow() {
+    auto* cell = dynamic_cast<brls::RecyclerCell*>(brls::Application::getCurrentFocus());
+    return cell && cell->getIndexPath().row >= 0 ? static_cast<size_t>(cell->getIndexPath().row) : static_cast<size_t>(-1);
 }
 
-} // namespace
+void pushOperation(AppController& controller);
+void pushTransfers(AppController& controller);
+void pushPairing(AppController& controller);
+void pushHomeStorage(AppController& controller);
+std::atomic<bool> operationViewOpen{};
 
-struct Ui::Impl {
-    struct TextSurface { SDL_Surface* surface{}; int width{}; int height{}; uint64_t used{}; };
-    SDL_Surface* screen{};
-    SDL_Surface* logo{};
-    #ifdef __SWITCH__
-    Framebuffer framebuffer{};
-    PadState pad{};
-    PrintConsole* console{};
-    #endif
-    bool framebufferReady{};
-    std::array<TTF_Font*, 3> fonts{};
-    bool ready{};
-    bool fallback{};
-    bool plReady{};
-    bool romfsReady{};
-    bool ttfReady{};
-    bool touchDown{};
-    int lastTouchY{};
-    int touchStartX{};
-    int touchStartY{};
-    bool dragged{};
-    bool applet{};
-    size_t textCacheLimit{96};
-    uint64_t pressed{};
-    int tabSelection{-1};
-    std::string brand;
-    std::string header;
-    std::vector<std::string> tabs;
-    int activeTab{-1};
-    std::vector<std::string> lines;
-    std::string current;
-    std::string hint;
-    std::vector<Card> cards;
-    MenuFocus focus;
-    DirectionRepeat directionRepeat;
-    uint64_t cardAction{};
-    bool controllerConnected{};
-    bool inputFocused{true};
-    std::vector<Row> rows;
-    size_t selectedRow{};
-    int rowSelection{-1};
-    std::string subtitle;
-    std::string appletWarning;
-    uint64_t progressCurrent{};
-    uint64_t progressTotal{};
-    std::optional<qr::Code> qrCode;
-    std::unordered_map<std::string, TextSurface> textCache;
-    uint64_t frame{};
-    uint64_t inputPolls{};
-
-    ~Impl() {
-        for (auto& [_, item] : textCache) if (item.surface) SDL_FreeSurface(item.surface);
-        for (TTF_Font* font : fonts) if (font) TTF_CloseFont(font);
-        if (logo) SDL_FreeSurface(logo);
-        if (screen) SDL_FreeSurface(screen);
-        #ifdef __SWITCH__
-        if (framebufferReady) framebufferClose(&framebuffer);
-        #endif
+class OperationView final : public ObservedBox {
+  public:
+    explicit OperationView(AppController& appController) : ObservedBox(appController) {
+        setPadding(48, 72, 48, 72);
+        phase = label("", 28, 70);
+        message = label("", 22, 80);
+        progress = new ProgressBar();
+        progress->setHeight(12);
+        detail = label("", 18, 64);
+        addView(phase);
+        addView(message);
+        addView(progress);
+        addView(detail);
+        addView(new brls::Padding());
+        registerAction(i18n::tr(i18n::TextId::Cancel), brls::BUTTON_B, [this](brls::View*) {
+            const auto snapshot = controller.operationSnapshot();
+            if (snapshot.busy && snapshot.cancellable) controller.cancelOperation();
+            else if (!snapshot.busy) brls::Application::popActivity();
+            return true;
+        }, false, false, brls::SOUND_BACK);
+        refresh();
     }
 
-    TextSurface text(const std::string& value, int fontIndex, SDL_Color color, unsigned width) {
-        const std::string key = std::to_string(fontIndex) + ':' + std::to_string(width) + ':' + std::to_string(color.r) + ':' + std::to_string(color.g) + ':' + std::to_string(color.b) + ':' + value;
-        const auto found = textCache.find(key);
-        if (found != textCache.end()) { found->second.used = frame; return found->second; }
-        SDL_Surface* rendered = width ? TTF_RenderUTF8_Blended_Wrapped(fonts[fontIndex], value.c_str(), color, width) : TTF_RenderUTF8_Blended(fonts[fontIndex], value.c_str(), color);
-        if (!rendered) return {};
-        TextSurface output{rendered, rendered->w, rendered->h, frame};
-        size_t cacheBytes = static_cast<size_t>(rendered->pitch) * rendered->h;
-        for (const auto& [_, item] : textCache) cacheBytes += static_cast<size_t>(item.surface->pitch) * item.surface->h;
-        const size_t cacheBudget = (applet ? 4 : 12) * 1024 * 1024;
-        while (!textCache.empty() && (textCache.size() >= textCacheLimit || cacheBytes > cacheBudget)) {
-            auto oldest = std::min_element(textCache.begin(), textCache.end(), [](const auto& left, const auto& right) { return left.second.used < right.second.used; });
-            if (oldest != textCache.end()) { cacheBytes -= static_cast<size_t>(oldest->second.surface->pitch) * oldest->second.surface->h; SDL_FreeSurface(oldest->second.surface); textCache.erase(oldest); }
-        }
-        textCache.emplace(key, output);
-        return output;
+    ~OperationView() override { operationViewOpen = false; }
+
+    void refresh() override {
+        const auto snapshot = controller.operationSnapshot();
+        setActionAvailable(brls::BUTTON_B, !snapshot.busy || snapshot.cancellable);
+        phase->setText(snapshot.title);
+        message->setText(snapshot.message);
+        progress->setProgress(snapshot.total ? static_cast<float>(snapshot.current) / snapshot.total : 0);
+        detail->setText(snapshot.total
+            ? formatTransferProgress(snapshot.current, snapshot.total,
+                {snapshot.bytesPerSecond, snapshot.etaSeconds, snapshot.bytesPerSecond > 0})
+            : "");
     }
 
-    void drawText(const std::string& value, float x, float y, int fontIndex, SDL_Color color, unsigned width = 0) {
-        if (value.empty()) return;
-        std::string bounded = value.substr(0, 1024);
-        if (value.size() > bounded.size()) {
-            while (!bounded.empty() && (static_cast<unsigned char>(value[bounded.size()]) & 0xc0) == 0x80) bounded.pop_back();
-        }
-        if (!width) {
-            SDL_Rect clip{};
-            SDL_GetClipRect(screen, &clip);
-            const int limit = std::max(1, clip.x + clip.w - static_cast<int>(x));
-            int measured{};
-            TTF_SizeUTF8(fonts[fontIndex], bounded.c_str(), &measured, nullptr);
-            if (measured > limit) {
-                const std::string suffix = i18n::tr(i18n::TextId::Ellipsis);
-                do {
-                    if (bounded.empty()) break;
-                    bounded.pop_back();
-                    while (!bounded.empty() && (static_cast<unsigned char>(bounded.back()) & 0xc0) == 0x80) bounded.pop_back();
-                    // Remove the leading byte of the truncated multibyte glyph.
-                    if (!bounded.empty() && static_cast<unsigned char>(bounded.back()) >= 0xc0) bounded.pop_back();
-                    TTF_SizeUTF8(fonts[fontIndex], (bounded + suffix).c_str(), &measured, nullptr);
-                } while (measured > limit);
-                bounded += suffix;
-            }
-        }
-        const TextSurface item = text(bounded, fontIndex, color, width);
-        if (!item.surface || !screen) return;
-        SDL_Rect target{static_cast<int>(x), static_cast<int>(y), item.width, item.height};
-        SDL_BlitSurface(item.surface, nullptr, screen, &target);
+  private:
+    brls::Label* phase{};
+    brls::Label* message{};
+    brls::Label* detail{};
+    ProgressBar* progress{};
+};
+
+void pushFramed(const std::string& title, brls::View* content) {
+    auto* frame = new brls::AppletFrame(content);
+    frame->setTitle(title);
+    brls::Application::pushActivity(new brls::Activity(frame));
+}
+
+void pushOperation(AppController& controller) {
+    if (operationViewOpen.exchange(true)) return;
+    pushFramed(i18n::tr(i18n::TextId::Transfers), new OperationView(controller));
+}
+
+class TransfersView final : public ObservedBox {
+  public:
+    explicit TransfersView(AppController& appController) : ObservedBox(appController) {
+        setPadding(24, 48, 24, 48);
+        recycler = new brls::RecyclerFrame();
+        recycler->setGrow(1);
+        recycler->registerCell("detail", [] { return new brls::DetailCell(); });
+        recycler->setDataSource(new ModelDataSource([this] { return rows(); }, {}, {}, {}, false));
+        addView(recycler);
+        registerAction(i18n::tr(i18n::TextId::Cancel), brls::BUTTON_B, [this](brls::View*) {
+            const auto model = controller.transfersSnapshot();
+            if (!model.cancellable) return false;
+            controller.cancelOperation();
+            return true;
+        }, false, false, brls::SOUND_BACK);
+        refresh();
+    }
+
+    void refresh() override {
+        const auto model = controller.transfersSnapshot();
+        recycler->reloadData();
+        setActionAvailable(brls::BUTTON_B, model.cancellable);
+    }
+
+  private:
+    brls::RecyclerFrame* recycler{};
+
+    std::vector<Row> rows() const {
+        const auto model = controller.transfersSnapshot();
+        std::vector<Row> values;
+        for (const auto& entry : model.entries) values.emplace_back(entry.title, entry.detail);
+        if (values.empty()) values.emplace_back(i18n::tr(i18n::TextId::NoActiveTransfers), "");
+        return values;
     }
 };
 
-Ui::Ui() : impl_(std::make_unique<Impl>()) {}
-Ui::~Ui() { shutdown(); }
+void pushTransfers(AppController& controller) {
+    pushFramed(i18n::tr(i18n::TextId::Transfers), new TransfersView(controller));
+}
 
-bool Ui::initialize(std::string& error) {
-    auto& data = *impl_;
-    if (data.ready) return true;
-    appendDiagnostic("0.2.7: main entered", true);
-    #ifdef __SWITCH__
-    // Launch mode comes from the homebrew ABI, not the launcher name.
-    // Sphaira can launch us in either application or library-applet mode.
-    data.applet = appletGetAppletType() != AppletType_Application;
-    data.textCacheLimit = data.applet ? 24 : 96;
-    {
-        char environment[128]{};
-        std::snprintf(environment, sizeof(environment), "environment: applet_type=%d heap_override=%d heap_size=%llu", static_cast<int>(appletGetAppletType()), envHasHeapOverride() ? 1 : 0, static_cast<unsigned long long>(envHasHeapOverride() ? envGetHeapOverrideSize() : 0));
-        appendDiagnostic(environment);
+class PairingView final : public ObservedBox {
+  public:
+    explicit PairingView(AppController& appController) : ObservedBox(appController) {
+        setPadding(28, 56, 28, 56);
+        setAlignItems(brls::AlignItems::CENTER);
+        subtitle = label(i18n::tr(i18n::TextId::ScanWithPhone), 24, 48);
+        subtitle->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+        qrView = new QrView();
+        qrView->setWidth(360);
+        qrView->setHeight(360);
+        url = label("", 20, 50);
+        url->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+        code = label("", 28, 58);
+        code->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+        error = label("", 18, 48);
+        error->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+        addView(subtitle);
+        addView(qrView);
+        addView(url);
+        addView(code);
+        addView(error);
+        registerAction(i18n::tr(i18n::TextId::CheckNow), brls::BUTTON_A, [this](brls::View*) { controller.checkPairing(); pushOperation(controller); return true; }, false, false, brls::SOUND_CLICK);
+        registerAction(i18n::tr(i18n::TextId::Cancel), brls::BUTTON_B, [this](brls::View*) { controller.cancelPairing(); brls::Application::popActivity(); return true; }, false, false, brls::SOUND_BACK);
+        refresh();
     }
-    appendDiagnostic("ui: pl initialize");
-    if (R_FAILED(plInitialize(PlServiceType_User))) { error = "pl:u"; return false; }
-    data.plReady = true;
-    appendDiagnostic("ui: romfs initialize");
-    const Result romfsResult = romfsInit();
-    data.romfsReady = R_SUCCEEDED(romfsResult);
-    if (!data.romfsReady) appendDiagnostic("ui: optional RomFS unavailable; using drawn logo");
-    #endif
-    appendDiagnostic("ui: SDL_ttf initialize");
-    if (TTF_Init() != 0) { error = TTF_GetError(); shutdown(); return false; }
-    data.ttfReady = true;
-    #ifdef __SWITCH__
-    PlFontData font{};
-    appendDiagnostic("ui: shared font acquire");
-    if (R_FAILED(plGetSharedFontByType(&font, PlSharedFontType_Standard))) { error = "shared font"; shutdown(); return false; }
-    #endif
-    for (size_t index = 0; index < data.fonts.size(); ++index) {
-        const int pointSize = index == 0 ? 22 : index == 1 ? 30 : 42;
-        #ifdef __SWITCH__
-        data.fonts[index] = TTF_OpenFontRW(SDL_RWFromConstMem(font.address, font.size), 1, pointSize);
-        #else
-        const char* fontPath = std::getenv("SWITCHDRIVE_PREVIEW_FONT");
-        if (!fontPath) { error = "SWITCHDRIVE_PREVIEW_FONT"; shutdown(); return false; }
-        data.fonts[index] = TTF_OpenFont(fontPath, pointSize);
-        #endif
-        if (!data.fonts[index]) { error = TTF_GetError(); shutdown(); return false; }
+
+    void refresh() override {
+        const auto model = controller.pairingSnapshot();
+        qrView->setContent(model.qrUrl);
+        url->setText(model.url);
+        code->setText(model.code.empty() ? "" : std::string(i18n::tr(i18n::TextId::Code)) + ": " + model.code);
+        error->setText(model.error);
     }
-    #ifdef __SWITCH__
-    appendDiagnostic("ui: framebuffer create");
-    // The compositor retains the displayed buffer until a replacement is
-    // queued. One buffer can block the second dequeue and stop input polling.
-    Result framebufferResult = framebufferCreate(&data.framebuffer, nwindowGetDefault(), kWidth, kHeight, PIXEL_FORMAT_RGBA_8888, 2);
-    if (R_FAILED(framebufferResult)) { error = "framebufferCreate"; shutdown(); return false; }
-    data.framebufferReady = true;
-    framebufferResult = framebufferMakeLinear(&data.framebuffer);
-    if (R_FAILED(framebufferResult)) { error = "framebufferMakeLinear"; shutdown(); return false; }
-    #endif
-    data.screen = SDL_CreateRGBSurfaceWithFormat(0, kWidth, kHeight, 32, SDL_PIXELFORMAT_RGBA32);
-    if (!data.screen) { error = SDL_GetError(); shutdown(); return false; }
-    appendDiagnostic("ui: surface ready");
-    #ifdef __SWITCH__
-    if (data.romfsReady) data.logo = SDL_LoadBMP("romfs:/icon.bmp");
-    padConfigureInput(8, HidNpadStyleSet_NpadStandard);
-    padInitializeAny(&data.pad);
-    hidInitializeTouchScreen();
-    // Sample before any startup dialog can display a controller status.
-    padUpdate(&data.pad);
-    data.controllerConnected = padIsConnected(&data.pad);
-    data.inputFocused = appletGetFocusState() == AppletFocusState_InFocus;
-    #else
-    data.logo = SDL_LoadBMP("romfs/icon.bmp");
-    #endif
-    data.ready = true;
-    appendDiagnostic("ui: ready");
+
+  private:
+    brls::Label* subtitle{};
+    QrView* qrView{};
+    brls::Label* url{};
+    brls::Label* code{};
+    brls::Label* error{};
+};
+
+void pushPairing(AppController& controller) {
+    pushFramed(i18n::tr(i18n::TextId::ConnectDrive), new PairingView(controller));
+    controller.beginPairing();
+}
+
+class HomeStorageView final : public ObservedBox {
+  public:
+    explicit HomeStorageView(AppController& appController) : ObservedBox(appController) {
+        setPadding(24, 48, 24, 48);
+        recycler = new brls::RecyclerFrame();
+        recycler->setGrow(1);
+        recycler->registerCell("detail", [] { return new brls::DetailCell(); });
+        recycler->setDataSource(new ModelDataSource(
+            [this] { return rows(); },
+            [this](size_t index) { select(index); }));
+        addView(recycler);
+        refresh();
+    }
+
+    void refresh() override { recycler->reloadData(); }
+
+  private:
+    brls::RecyclerFrame* recycler{};
+
+    std::vector<Row> rows() const {
+        std::vector<Row> values{
+            {i18n::tr(i18n::TextId::DetectNetwork), i18n::tr(i18n::TextId::DetectingStorage)},
+            {i18n::tr(i18n::TextId::ManualSetup), i18n::tr(i18n::TextId::ServerAddress)},
+        };
+        const auto setup = controller.homeStorageSetupSnapshot();
+        for (const auto& item : setup.discoveries) values.emplace_back(item.health.name, item.baseUrl);
+        if (!setup.error.empty()) values.emplace_back(i18n::tr(i18n::TextId::HomeStorage), setup.error);
+        return values;
+    }
+
+    void credentials(const std::string& address) {
+        brls::Application::getImeManager()->openForText([this, address](std::string username) {
+            brls::Application::getImeManager()->openForText([this, address, username](std::string password) {
+                controller.configureHomeStorage(address, username, password);
+                pushOperation(controller);
+            }, i18n::tr(i18n::TextId::Password), "", 128, "");
+        }, i18n::tr(i18n::TextId::Username), "", 128, "");
+    }
+
+    void select(size_t index) {
+        if (index == 0) { controller.discoverHomeStorageServers(); pushOperation(controller); return; }
+        if (index == 1) {
+            brls::Application::getImeManager()->openForText([this](std::string address) { credentials(address); },
+                i18n::tr(i18n::TextId::ServerAddress), "", 512, "");
+            return;
+        }
+        const auto setup = controller.homeStorageSetupSnapshot();
+        if (index - 2 < setup.discoveries.size()) credentials(setup.discoveries[index - 2].baseUrl);
+    }
+};
+
+void pushHomeStorage(AppController& controller) {
+    pushFramed(i18n::tr(i18n::TextId::HomeStorage), new HomeStorageView(controller));
+}
+
+class HomeView final : public ObservedBox {
+  public:
+    HomeView(AppController& appController, std::function<void(int)> navigateAction)
+        : ObservedBox(appController), navigate(std::move(navigateAction)) {
+        setPadding(24, 48, 24, 48);
+        warning = label("", 18, 44);
+        warning->setTextColor(nvgRGB(230, 140, 30));
+        recycler = new brls::RecyclerFrame();
+        recycler->setGrow(1);
+        recycler->registerCell("detail", [] { return new brls::DetailCell(); });
+        recycler->setDataSource(new ModelDataSource([this] { return rows(); }, [this](size_t index) {
+            if (index == 0) pushPairing(controller);
+            else if (index == 1) navigate(1);
+            else if (index == 2) pushTransfers(controller);
+            else if (index == 3) navigate(2);
+        }));
+        addView(warning);
+        addView(recycler);
+        refresh();
+    }
+
+    void refresh() override {
+        const auto model = controller.homeSnapshot();
+        warning->setText(model.appletMode ? i18n::tr(i18n::TextId::AppletModeWarning) : "");
+        warning->setVisibility(model.appletMode ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+        recycler->reloadData();
+    }
+
+  private:
+    brls::Label* warning{};
+    brls::RecyclerFrame* recycler{};
+    std::function<void(int)> navigate;
+
+    std::vector<Row> rows() const {
+        const auto model = controller.homeSnapshot();
+        return {
+            {i18n::tr(i18n::TextId::ConnectDrive), model.account},
+            {i18n::tr(i18n::TextId::StorageProviders), model.provider},
+            {i18n::tr(i18n::TextId::Transfers), std::to_string(model.activeTasks)},
+            {i18n::tr(i18n::TextId::Library), std::to_string(model.libraryItems)},
+        };
+    }
+};
+
+class FilesView final : public ObservedBox {
+  public:
+    explicit FilesView(AppController& appController) : ObservedBox(appController) {
+        setPadding(24, 48, 24, 48);
+        recycler = new brls::RecyclerFrame();
+        recycler->setGrow(1);
+        recycler->registerCell("detail", [] { return new FocusDetailCell(); });
+        recycler->setDataSource(new ModelDataSource([this] { return rows(); }, [this](size_t index) { select(index); },
+            [this] { controller.loadNextFilesPage(); }, [this](size_t index) { updateActions(index); }, false));
+        addView(recycler);
+        recycler->registerAction(i18n::tr(i18n::TextId::StorageProviders), brls::BUTTON_X, [this](brls::View*) {
+            chooseProvider();
+            return true;
+        }, false, false, brls::SOUND_CLICK);
+        recycler->registerAction(i18n::tr(i18n::TextId::Files), brls::BUTTON_Y, [this](brls::View*) {
+            chooseScope();
+            return true;
+        }, false, false, brls::SOUND_CLICK);
+        recycler->registerAction(i18n::tr(i18n::TextId::HideCatalogEntry), brls::BUTTON_LT, [this](brls::View*) {
+            const auto index = focusedRow();
+            const auto model = controller.filesSnapshot();
+            if (index >= model.entries.size() || !model.entries[index].canHide) return false;
+            confirm(i18n::tr(i18n::TextId::HideCatalogConfirm), [this, index] { controller.hide(index); pushOperation(controller); });
+            return true;
+        }, true, false, brls::SOUND_CLICK);
+        // TabFrame also has a B action that focuses its sidebar. Registering
+        // this on the recycler gives folder navigation priority while a row is
+        // focused, then lets TabFrame handle B only at the root folder.
+        recycler->registerAction(i18n::tr(i18n::TextId::Back), brls::BUTTON_B, [this](brls::View*) {
+            if (controller.filesSnapshot().breadcrumb.empty()) return false;
+            controller.backFolder();
+            return true;
+        }, true, false, brls::SOUND_BACK);
+        const auto guard = lifetimeGuard();
+        brls::sync([this, guard] {
+            if (guard->load()) setActionHintHidden(this, brls::BUTTON_B, true);
+        });
+        refresh();
+        if (controller.filesSnapshot().entries.empty()) controller.refreshFiles();
+    }
+
+    void refresh() override {
+        const auto model = controller.filesSnapshot();
+        recycler->reloadData();
+        updateActions(focusedRow());
+    }
+
+  private:
+    brls::RecyclerFrame* recycler{};
+
+    void updateActions(size_t index) {
+        const auto model = controller.filesSnapshot();
+        const bool valid = index < model.entries.size();
+        recycler->setActionAvailable(brls::BUTTON_X, !controller.providersSnapshot().empty());
+        recycler->setActionAvailable(brls::BUTTON_Y, model.canChangeScope);
+        recycler->setActionAvailable(brls::BUTTON_LT, valid && model.entries[index].canHide);
+    }
+
+    std::vector<Row> rows() const {
+        const auto model = controller.filesSnapshot();
+        std::vector<Row> values;
+        for (const auto& entry : model.entries) values.emplace_back(entry.title, entry.detail);
+        if (model.loading) values.emplace_back(i18n::tr(i18n::TextId::LoadingFiles), "");
+        else if (!model.error.empty()) values.emplace_back(model.error, "");
+        else if (values.empty()) values.emplace_back(i18n::tr(i18n::TextId::EmptyFolder), "");
+        return values;
+    }
+
+    void chooseProvider() {
+        const auto providers = controller.providersSnapshot();
+        if (providers.empty()) return;
+        std::vector<std::string> names;
+        int selected{};
+        const auto active = controller.filesSnapshot().providerId;
+        for (size_t index = 0; index < providers.size(); ++index) {
+            names.push_back(providers[index].name);
+            if (providers[index].id == active) selected = static_cast<int>(index);
+        }
+        auto* selector = new brls::Dropdown(i18n::tr(i18n::TextId::StorageProviders), names,
+            [this, providers](int index) {
+                if (index >= 0 && static_cast<size_t>(index) < providers.size())
+                    controller.selectProvider(providers[static_cast<size_t>(index)].id);
+            }, selected);
+        brls::Application::pushActivity(new brls::Activity(selector));
+    }
+
+    void chooseScope() {
+        const auto model = controller.filesSnapshot();
+        if (!model.canChangeScope) return;
+        auto* selector = new brls::Dropdown(i18n::tr(i18n::TextId::Files),
+            {i18n::tr(i18n::TextId::MyDrive), i18n::tr(i18n::TextId::SharedWithMe)},
+            [this](int index) { controller.setSharedWithMe(index == 1); }, model.shared ? 1 : 0);
+        brls::Application::pushActivity(new brls::Activity(selector));
+    }
+
+    void select(size_t index) {
+        const auto model = controller.filesSnapshot();
+        if (index >= model.entries.size()) return;
+        const auto& entry = model.entries[index];
+        if (entry.folder) {
+            controller.openFolder(index);
+            return;
+        }
+        if (!entry.canDownload) return;
+        auto* dialog = new brls::Dialog(entry.title);
+        dialog->addButton(i18n::tr(i18n::TextId::Download), [this, index] {
+            chooseResume(index, false, NspInstallStorage::SdCard);
+        });
+        if (entry.installable && !controller.appletMode())
+            dialog->addButton(i18n::tr(i18n::TextId::DownloadAndInstall), [this, index] {
+                chooseInstallDestination(index);
+            });
+        dialog->addButton(i18n::tr(i18n::TextId::Cancel), [] {});
+        dialog->open();
+    }
+
+    void chooseInstallDestination(size_t index) {
+        auto* dialog = new brls::Dialog(i18n::tr(i18n::TextId::DestinationHint));
+        dialog->addButton(i18n::tr(i18n::TextId::SdCard), [this, index] { chooseResume(index, true, NspInstallStorage::SdCard); });
+        dialog->addButton(i18n::tr(i18n::TextId::InternalStorage), [this, index] { chooseResume(index, true, NspInstallStorage::InternalUser); });
+        dialog->addButton(i18n::tr(i18n::TextId::Cancel), [] {});
+        dialog->open();
+    }
+
+    void chooseResume(size_t index, bool installAfter, NspInstallStorage destination) {
+        const auto model = controller.filesSnapshot();
+        if (index >= model.entries.size()) return;
+        const auto& entry = model.entries[index];
+        auto start = [this, index, installAfter, destination](bool restart) {
+            controller.download(index, installAfter, destination, restart);
+            pushOperation(controller);
+        };
+        if (!entry.partial) { start(false); return; }
+        auto* dialog = new brls::Dialog(i18n::tr(entry.restartRequired
+            ? i18n::TextId::RemoteChanged : i18n::TextId::PartialDownloadFound));
+        if (!entry.restartRequired)
+            dialog->addButton(i18n::tr(i18n::TextId::Resume), [start] { start(false); });
+        dialog->addButton(i18n::tr(i18n::TextId::Restart), [start] { start(true); });
+        dialog->addButton(i18n::tr(i18n::TextId::Cancel), [] {});
+        dialog->open();
+    }
+};
+
+class LibraryView final : public ObservedBox {
+  public:
+    explicit LibraryView(AppController& appController) : ObservedBox(appController) {
+        setPadding(24, 48, 24, 48);
+        warning = label("", 18, 42);
+        warning->setTextColor(nvgRGB(230, 140, 30));
+        recycler = new brls::RecyclerFrame();
+        recycler->setGrow(1);
+        recycler->registerCell("detail", [] { return new FocusDetailCell(); });
+        recycler->setDataSource(new ModelDataSource([this] { return rows(); }, [this](size_t index) { install(index); }, {},
+            [this](size_t index) { updateActions(index); }));
+        addView(warning);
+        addView(recycler);
+        recycler->registerAction(i18n::tr(i18n::TextId::DeleteDownload), brls::BUTTON_Y, [this](brls::View*) {
+            const auto index = focusedRow();
+            const auto model = controller.librarySnapshot();
+            if (index >= model.entries.size() || !model.entries[index].canRemovePackage) return false;
+            confirm(i18n::tr(i18n::TextId::DeleteDownloadWarning), [this, index] { controller.removeLibraryPackage(index); });
+            return true;
+        }, false, false, brls::SOUND_CLICK);
+        refresh();
+    }
+
+    void refresh() override {
+        const auto model = controller.librarySnapshot();
+        warning->setText(model.appletMode ? i18n::tr(i18n::TextId::AppletModeWarning) : "");
+        warning->setVisibility(model.appletMode ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+        recycler->reloadData();
+        updateActions(focusedRow());
+    }
+
+  private:
+    brls::Label* warning{};
+    brls::RecyclerFrame* recycler{};
+
+    void updateActions(size_t index) {
+        const auto model = controller.librarySnapshot();
+        const bool valid = index < model.entries.size();
+        recycler->setActionAvailable(brls::BUTTON_Y, valid && model.entries[index].canRemovePackage);
+    }
+
+    std::vector<Row> rows() const {
+        const auto model = controller.librarySnapshot();
+        std::vector<Row> values;
+        for (const auto& entry : model.entries) values.emplace_back(entry.title, entry.detail);
+        if (values.empty()) values.emplace_back(i18n::tr(i18n::TextId::NoIndexedDownloads), "");
+        return values;
+    }
+
+    void install(size_t index) {
+        const auto model = controller.librarySnapshot();
+        if (index >= model.entries.size() || !model.entries[index].canInstall) return;
+        auto* dialog = new brls::Dialog(i18n::tr(i18n::TextId::DestinationHint));
+        dialog->addButton(i18n::tr(i18n::TextId::SdCard), [this, index] { controller.installLibraryItem(index, NspInstallStorage::SdCard); pushOperation(controller); });
+        dialog->addButton(i18n::tr(i18n::TextId::InternalStorage), [this, index] { controller.installLibraryItem(index, NspInstallStorage::InternalUser); pushOperation(controller); });
+        dialog->addButton(i18n::tr(i18n::TextId::Cancel), [] {});
+        dialog->open();
+    }
+};
+
+class SettingsView final : public ObservedBox {
+  public:
+    explicit SettingsView(AppController& appController) : ObservedBox(appController) {
+        setPadding(24, 48, 24, 48);
+        account = new brls::DetailCell();
+        account->setText(i18n::tr(i18n::TextId::ConnectDrive));
+        account->registerClickAction([this](brls::View*) { pushPairing(controller); return true; });
+        language = new brls::SelectorCell();
+        const auto current = i18n::parseLanguage(controller.settingsSnapshot().languageCode);
+        language->init(i18n::tr(i18n::TextId::Language), {
+            std::string(i18n::languageName(i18n::Language::EnUs)),
+            std::string(i18n::languageName(i18n::Language::PtBr)),
+            std::string(i18n::languageName(i18n::Language::EsEs)),
+        }, static_cast<int>(current), [this](int selected) {
+            controller.setLanguage(static_cast<i18n::Language>(selected));
+            brls::Application::notify(i18n::tr(i18n::TextId::RestartRequired));
+        });
+        homeStorage = new brls::DetailCell();
+        homeStorage->setText(i18n::tr(i18n::TextId::HomeStorage));
+        homeStorage->registerClickAction([this](brls::View*) { pushHomeStorage(controller); return true; });
+        addView(account);
+        addView(language);
+        addView(homeStorage);
+        addView(new brls::Padding());
+        refresh();
+    }
+
+    void refresh() override {
+        const auto model = controller.settingsSnapshot();
+        account->setDetailText(model.account);
+        homeStorage->setDetailText(model.homeStorage);
+    }
+
+  private:
+    brls::DetailCell* account{};
+    brls::SelectorCell* language{};
+    brls::DetailCell* homeStorage{};
+};
+
+class MainActivity final : public brls::Activity {
+  public:
+    explicit MainActivity(AppController& controller) : controller(controller) {}
+
+    brls::View* createContentView() override {
+        tabs = new brls::TabFrame();
+        auto navigate = [this](int page) { current = page; tabs->focusTab(page); };
+        tabs->addTab(i18n::tr(i18n::TextId::Home), [this, navigate] { current = 0; setFilesHints(false); return new HomeView(controller, navigate); });
+        tabs->addTab(i18n::tr(i18n::TextId::Files), [this] { current = 1; setFilesHints(true); return new FilesView(controller); });
+        tabs->addTab(i18n::tr(i18n::TextId::Library), [this] { current = 2; setFilesHints(false); return new LibraryView(controller); });
+        tabs->addTab(i18n::tr(i18n::TextId::Settings), [this] { current = 3; setFilesHints(false); return new SettingsView(controller); });
+        frame = new brls::AppletFrame(tabs);
+        frame->setTitle(i18n::tr(i18n::TextId::AppName));
+        footerHints = findHints(frame->getFooter());
+        return frame;
+    }
+
+    void onContentAvailable() override {
+        registerAction(i18n::tr(i18n::TextId::ButtonL), brls::BUTTON_LB, [this](brls::View*) { current = (current + 3) % 4; tabs->focusTab(current); return true; }, true, false, brls::SOUND_FOCUS_CHANGE);
+        registerAction(i18n::tr(i18n::TextId::ButtonR), brls::BUTTON_RB, [this](brls::View*) { current = (current + 1) % 4; tabs->focusTab(current); return true; }, true, false, brls::SOUND_FOCUS_CHANGE);
+        registerAction(i18n::tr(i18n::TextId::Exit), brls::BUTTON_START, [this](brls::View*) {
+            const auto operation = controller.operationSnapshot();
+            confirm(i18n::tr(operation.busy ? i18n::TextId::ExitActiveConfirm : i18n::TextId::ExitConfirm), [this] {
+                controller.cancelOperation();
+                brls::Application::quit();
+            });
+            return true;
+        }, false, false, brls::SOUND_CLICK);
+        setFilesHints(current == 1);
+    }
+
+  private:
+    AppController& controller;
+    brls::TabFrame* tabs{};
+    brls::AppletFrame* frame{};
+    brls::Hints* footerHints{};
+    int current{};
+
+    void setFilesHints(bool files) {
+        if (frame) {
+            setActionHintHidden(frame, brls::BUTTON_B, files);
+            setActionHintHidden(frame, brls::BUTTON_START, files);
+        }
+        if (footerHints) footerHints->setAddUnableAButtonAction(!files);
+        brls::Application::getGlobalHintsUpdateEvent()->fire();
+    }
+};
+
+} // namespace
+
+struct Ui::Impl { bool initialized{}; };
+
+Ui::Ui() : impl_(std::make_unique<Impl>()) {}
+Ui::~Ui() = default;
+
+bool Ui::initialize(const std::string& locale, std::string& error) {
+    brls::Platform::APP_LOCALE_DEFAULT = locale;
+    brls::Logger::setLogLevel(brls::LogLevel::LOG_INFO);
+    brls::Logger::info("ui: Application::init begin");
+    if (!brls::Application::init()) {
+        brls::Logger::error("ui: Application::init failed");
+        error = i18n::tr(i18n::TextId::StartFailed);
+        return false;
+    }
+    brls::Logger::info("ui: Application::init complete");
+    brls::Logger::info("ui: createWindow begin");
+    brls::Application::createWindow(i18n::tr(i18n::TextId::AppName));
+    brls::Logger::info("ui: createWindow complete");
+    brls::Application::setGlobalQuit(false);
+    brls::Theme::getLightTheme().addColor("switchdrive/accent", nvgRGB(0, 180, 205));
+    brls::Theme::getDarkTheme().addColor("switchdrive/accent", nvgRGB(45, 205, 225));
+    impl_->initialized = true;
     return true;
 }
 
-void Ui::diagnostic(const char* stage) const { appendDiagnostic(stage); }
-
-void Ui::enableConsoleFallback(const std::string& error) {
-    auto& data = *impl_;
-    #ifdef __SWITCH__
-    if (!data.console) data.console = consoleInit(nullptr);
-    data.fallback = true;
-    padConfigureInput(8, HidNpadStyleSet_NpadStandard);
-    padInitializeAny(&data.pad);
-    #endif
-    (void)data; (void)error;
+int Ui::run(AppController& controller) {
+    if (!impl_->initialized) return 1;
+    brls::Logger::info("ui: pushing main activity");
+    brls::Application::pushActivity(new MainActivity(controller));
+    brls::Logger::info("ui: entering main loop");
+    while (brls::Application::mainLoop()) {}
+    brls::Logger::info("ui: main loop exited");
+    return 0;
 }
 
-void Ui::shutdown() {
-    if (!impl_) return;
-    auto& data = *impl_;
-    #ifdef __SWITCH__
-    if (data.fallback && data.console) { consoleExit(data.console); data.console = nullptr; }
-    #endif
-    for (auto& [_, item] : data.textCache) if (item.surface) SDL_FreeSurface(item.surface);
-    data.textCache.clear();
-    for (TTF_Font*& font : data.fonts) { if (font) TTF_CloseFont(font); font = nullptr; }
-    if (data.logo) { SDL_FreeSurface(data.logo); data.logo = nullptr; }
-    if (data.screen) { SDL_FreeSurface(data.screen); data.screen = nullptr; }
-    #ifdef __SWITCH__
-    if (data.framebufferReady) { framebufferClose(&data.framebuffer); data.framebufferReady = false; }
-    #endif
-    if (data.ttfReady) { TTF_Quit(); data.ttfReady = false; }
-    #ifdef __SWITCH__
-    if (data.romfsReady) { romfsExit(); data.romfsReady = false; }
-    if (data.plReady) { plExit(); data.plReady = false; }
-    #endif
-    data.ready = false;
-}
-
-#ifndef __SWITCH__
-bool Ui::savePreview(const std::string& path, bool applet) {
-    impl_->applet = applet;
-    present();
-    return impl_->screen && SDL_SaveBMP(impl_->screen, path.c_str()) == 0;
-}
-#endif
-
-bool Ui::graphical() const { return impl_->ready; }
-bool Ui::appletMode() const { return impl_->applet; }
-
-void Ui::clear() {
-    #ifdef __SWITCH__
-    if (impl_->fallback) { consoleClear(); return; }
-    #endif
-    impl_->lines.clear();
-    impl_->current.clear();
-    impl_->hint.clear();
-    impl_->cards.clear();
-    impl_->rows.clear();
-    impl_->subtitle.clear();
-    impl_->progressCurrent = 0;
-    impl_->progressTotal = 0;
-    impl_->qrCode.reset();
-
-}
-void Ui::setBrand(const std::string& text) { impl_->brand = text; }
-void Ui::setHeader(const std::string& title, const std::vector<std::string>& tabs, int activeTab) {
-    auto& data = *impl_;
-    if (data.activeTab != activeTab) data.focus.card = 0;
-    if (tabs.empty() || data.tabs.empty()) data.focus.sidebar = false;
-    data.header = title;
-    data.tabs = tabs;
-    data.activeTab = activeTab;
-}
-void Ui::setHint(const std::string& text) { impl_->hint = stripAnsi(text); }
-void Ui::setCards(std::vector<Card> cards) {
-    impl_->cards = std::move(cards);
-    if (impl_->focus.card >= impl_->cards.size()) impl_->focus.card = 0;
-}
-void Ui::moveFocus(Direction direction) {
-    auto& data = *impl_;
-    const int section = data.focus.move(direction, data.cards.size(), data.activeTab, data.tabs.size());
-    if (section >= 0) data.tabSelection = section;
-}
-uint64_t Ui::takeCardAction() { const auto result = impl_->cardAction; impl_->cardAction = 0; return result; }
-bool Ui::controllerConnected() const { return impl_->controllerConnected; }
-bool Ui::inputFocused() const { return impl_->inputFocused; }
-void Ui::setRows(std::vector<Row> rows, size_t selected) { impl_->rows = std::move(rows); impl_->selectedRow = selected; }
-void Ui::setSubtitle(const std::string& text) { impl_->subtitle = text; }
-int Ui::takeRowSelection() { const int result = impl_->rowSelection; impl_->rowSelection = -1; return result; }
-void Ui::setAppletWarning(const std::string& text) { impl_->appletWarning = stripAnsi(text); }
-void Ui::setProgress(uint64_t current, uint64_t total) { impl_->progressCurrent = current; impl_->progressTotal = total; }
-void Ui::setQrCode(const std::string& content) { impl_->qrCode = qr::encode(content); }
-
-void Ui::write(const std::string& text) {
-    auto& data = *impl_;
-    if (data.fallback) { std::fputs(text.c_str(), stdout); return; }
-    const std::string clean = stripAnsi(text);
-    for (char character : clean) {
-        if (character == '\r') data.current.clear();
-        else if (character == '\n') { data.lines.push_back(data.current); data.current.clear(); }
-        else data.current += character;
-    }
-}
-
-void Ui::present() {
-    auto& data = *impl_;
-    #ifdef __SWITCH__
-    if (data.fallback) { consoleUpdate(nullptr); return; }
-    #endif
-    if (!data.ready) return;
-    ++data.frame;
-    if (!data.screen) return;
-    fillRect(data.screen, 0, 0, kWidth, kHeight, kBackground);
-    // A permanent navigation rail leaves room for long translated page names.
-    fillRect(data.screen, 0, 0, 244, kHeight, kSurface);
-    if (data.logo) {
-        SDL_Rect target{28, 32, 56, 56};
-        SDL_BlitScaled(data.logo, nullptr, data.screen, &target);
-    } else drawIcon(data.screen, Icon::Cloud, 28, 32, kAccent);
-    data.drawText(data.brand, 28, 104, 1, kText, 204);
-    data.drawText(i18n::tr(i18n::TextId::AppVersion), 28, 156, 0, kMuted, 204);
-    for (size_t index = 0; index < data.tabs.size(); ++index) {
-        const int y = 204 + static_cast<int>(index) * 76;
-        const bool active = static_cast<int>(index) == data.activeTab;
-        if (active) {
-            if (data.focus.sidebar) roundedRect(data.screen, 14, y - 2, 216, 66, 16, kAccent);
-            roundedRect(data.screen, 16, y, 212, 62, 14, kSelected);
-        }
-        if (active) roundedRect(data.screen, 16, y + 16, 4, 30, 2, kAccent);
-        data.drawText(data.tabs[index], 40, y + 17, 0, active ? kAccent : kMuted, 180);
-    }
-    data.drawText(data.header, 292, 38, 2, kText, 924);
-    data.drawText(data.subtitle, 294, 104, 0, kMuted, 924);
-    const int contentY = data.applet ? 220 : 166;
-    if (data.applet) {
-        roundedRect(data.screen, 292, 150, 936, 54, 12, kWarningSurface);
-        data.drawText(data.appletWarning, 310, 158, 0, kWarning, 896);
-    }
-    for (size_t index = 0; index < data.cards.size(); ++index) {
-        const auto& card = data.cards[index];
-        const int x = 292 + static_cast<int>(index % 2) * 478;
-        const int y = contentY + static_cast<int>(index / 2) * 182;
-        const bool focused = !data.focus.sidebar && index == data.focus.card;
-        if (focused) roundedRect(data.screen, x - 3, y - 3, 464, 170, 23, kAccent);
-        roundedRect(data.screen, x, y, 458, 164, 20, focused ? kSelected : kRaised);
-        drawIcon(data.screen, card.icon, x + 24, y + 20, kAccent);
-        SDL_Rect clip{x + 24, y + 76, 410, 76};
-        SDL_SetClipRect(data.screen, &clip);
-        data.drawText(card.title, x + 24, y + 76, 1, kText);
-        data.drawText(card.detail, x + 24, y + 120, 0, kMuted);
-        SDL_SetClipRect(data.screen, nullptr);
-        if (focused || card.action != HidNpadButton_A) {
-            const auto button = i18n::tr(focused ? i18n::TextId::ButtonA : card.action == HidNpadButton_X ? i18n::TextId::ButtonX : card.action == HidNpadButton_ZL ? i18n::TextId::ButtonZL : i18n::TextId::ButtonY);
-            roundedRect(data.screen, x + 392, y + 22, 40, 40, 20, kSelected);
-            data.drawText(button, x + 404, y + 28, 0, kAccent);
-        }
-    }
-    if (!data.rows.empty()) {
-        const size_t visible = data.applet ? 5 : 6;
-        const size_t first = viewportStart(data.selectedRow, data.rows.size(), visible);
-        for (size_t index = first; index < data.rows.size() && index < first + visible; ++index) {
-            const auto box = rowBounds(index - first, data.applet);
-            const auto& row = data.rows[index];
-            const bool active = index == data.selectedRow;
-            roundedRect(data.screen, box.x, box.y, box.width, box.height, 12, active ? kSelected : kSurface);
-            if (active) roundedRect(data.screen, box.x, box.y + 12, 4, 38, 2, kAccent);
-            drawIcon(data.screen, row.icon, box.x + 18, box.y + 9, active ? kAccent : kMuted);
-            SDL_Rect clip{box.x + 78, box.y, 558, box.height};
-            SDL_SetClipRect(data.screen, &clip);
-            data.drawText(row.title, box.x + 78, box.y + 17, 0, kText, 0);
-            SDL_SetClipRect(data.screen, nullptr);
-            clip = {box.x + 664, box.y, 248, box.height};
-            SDL_SetClipRect(data.screen, &clip);
-            data.drawText(row.detail, box.x + 664, box.y + 17, 0, kMuted, 0);
-            SDL_SetClipRect(data.screen, nullptr);
-        }
-        if (data.rows.size() > visible) {
-            const int height = static_cast<int>(visible * 68);
-            const int thumb = std::max(24, height * static_cast<int>(visible) / static_cast<int>(data.rows.size()));
-            roundedRect(data.screen, 1240, contentY, 4, height, 2, kRaised);
-            roundedRect(data.screen, 1240, contentY + (height - thumb) * static_cast<int>(first) / static_cast<int>(data.rows.size() - visible), 4, thumb, 2, kAccent);
-        }
-    }
-    std::vector<std::string> lines = data.lines;
-    if (!data.current.empty()) lines.push_back(data.current);
-    if (data.qrCode) {
-        const int panelY = contentY;
-        roundedRect(data.screen, 292, panelY, 370, 376 - (data.applet ? 54 : 0), 20, kSurface);
-        const int modulePixels = std::max(1, std::min(8, 325 / (data.qrCode->size + 8)));
-        const int qrPixels = (data.qrCode->size + 8) * modulePixels;
-        const int qrX = 292 + (370 - qrPixels) / 2;
-        const int qrY = panelY + (376 - (data.applet ? 54 : 0) - qrPixels) / 2;
-        fillRect(data.screen, qrX, qrY, qrPixels, qrPixels, kText);
-        for (int row = 0; row < data.qrCode->size; ++row) for (int column = 0; column < data.qrCode->size; ++column) {
-            if (data.qrCode->dark(row, column)) fillRect(data.screen, qrX + (column + 4) * modulePixels, qrY + (row + 4) * modulePixels, modulePixels, modulePixels, kBackground);
-        }
-        roundedRect(data.screen, 686, panelY, 542, 376 - (data.applet ? 54 : 0), 20, kSurface);
-        SDL_Rect clip{710, panelY + 24, 494, 320 - (data.applet ? 54 : 0)};
-        SDL_SetClipRect(data.screen, &clip);
-        int y = panelY + 30;
-        for (const auto& line : lines) {
-            if (line.empty()) { y += 12; continue; }
-            const auto item = data.text(line.substr(0, 1024), 0, kText, 474);
-            if (!item.surface) continue;
-            SDL_Rect target{714, y, item.width, item.height};
-            SDL_BlitSurface(item.surface, nullptr, data.screen, &target);
-            y += item.height + 14;
-            if (y > clip.y + clip.h) break;
-        }
-        SDL_SetClipRect(data.screen, nullptr);
-    } else if (!lines.empty()) {
-        // Status and confirmation screens are wrapped prose, never terminal rows.
-        roundedRect(data.screen, 292, contentY, 936, 376 - (data.applet ? 54 : 0), 20, kSurface);
-        SDL_Rect clip{316, contentY + 18, 884, 318 - (data.applet ? 54 : 0)};
-        SDL_SetClipRect(data.screen, &clip);
-        int y = contentY + 24;
-        for (const auto& line : lines) {
-            if (line.empty()) { y += 12; continue; }
-            const auto item = data.text(line.substr(0, 1024), 0, kText, 864);
-            if (!item.surface) continue;
-            SDL_Rect target{320, y, item.width, item.height};
-            SDL_BlitSurface(item.surface, nullptr, data.screen, &target);
-            y += item.height + 12;
-            if (y > clip.y + clip.h) break;
-        }
-        SDL_SetClipRect(data.screen, nullptr);
-    }
-    if (data.progressTotal) {
-        const double ratio = std::min(1.0, static_cast<double>(data.progressCurrent) / static_cast<double>(data.progressTotal));
-        roundedRect(data.screen, 316, 568, 888, 12, 6, kRaised);
-        roundedRect(data.screen, 316, 568, static_cast<int>(888 * ratio), 12, 6, kAccent);
-    }
-    fillRect(data.screen, 276, 622, 952, 1, kRaised);
-    data.drawText(data.hint, 292, 641, 0, kMuted, 680);
-    const auto inputText = !data.inputFocused ? i18n::TextId::InputUnfocused : data.controllerConnected ? i18n::TextId::ControllerReady : i18n::TextId::ControllerMissing;
-    const auto inputColor = data.inputFocused && data.controllerConnected ? kAccent : kWarning;
-    SDL_Rect inputClip{1000, 630, 228, 50};
-    SDL_SetClipRect(data.screen, &inputClip);
-    data.drawText(i18n::tr(inputText), 1000, 641, 0, inputColor);
-    SDL_SetClipRect(data.screen, nullptr);
-    #ifdef __SWITCH__
-    const bool traceFrame = data.frame <= 3 || data.frame == 60 || data.frame == 300;
-    const auto trace = [&](const char* stage) {
-        if (!traceFrame) return;
-        char diagnostic[96]{};
-        std::snprintf(diagnostic, sizeof(diagnostic), "video: frame=%llu %s",
-            static_cast<unsigned long long>(data.frame), stage);
-        appendDiagnostic(diagnostic);
-    };
-    trace("before dequeue");
-    u32 stride{};
-    auto* output = static_cast<unsigned char*>(framebufferBegin(&data.framebuffer, &stride));
-    trace("buffer acquired");
-    if (output) {
-        const auto* input = static_cast<const unsigned char*>(data.screen->pixels);
-        for (int row = 0; row < kHeight; ++row) std::memcpy(output + static_cast<size_t>(row) * stride, input + static_cast<size_t>(row) * data.screen->pitch, kWidth * 4);
-    }
-    framebufferEnd(&data.framebuffer);
-    trace("queued");
-    #endif
-}
-
-void Ui::scanInput() {
-    #ifdef __SWITCH__
-    auto& data = *impl_;
-    data.pressed = 0;
-    data.tabSelection = -1;
-    data.rowSelection = -1;
-    data.cardAction = 0;
-    padUpdate(&data.pad);
-    const bool wasConnected = data.controllerConnected;
-    const bool wasFocused = data.inputFocused;
-    data.controllerConnected = padIsConnected(&data.pad);
-    data.pressed = padGetButtonsDown(&data.pad);
-    data.inputFocused = appletGetFocusState() == AppletFocusState_InFocus;
-    ++data.inputPolls;
-    if (data.inputPolls <= 3 || data.inputPolls == 60 || data.inputPolls == 300 ||
-        wasConnected != data.controllerConnected || wasFocused != data.inputFocused ||
-        (data.pressed & HidNpadButton_Plus)) {
-        char diagnostic[160]{};
-        std::snprintf(diagnostic, sizeof(diagnostic), "input: poll=%llu frame=%llu connected=%d focus=%d down=%llx",
-            static_cast<unsigned long long>(data.inputPolls), static_cast<unsigned long long>(data.frame),
-            data.controllerConnected, data.inputFocused, static_cast<unsigned long long>(data.pressed));
-        appendDiagnostic(diagnostic);
-    }
-    // Read both sticks as well as the D-pad; normalize held directions before
-    // detecting repeats so either Joy-Con can navigate without frame-rate drift.
-    const uint64_t held = padGetButtons(&data.pad);
-    constexpr uint64_t directionMask = HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_Left | HidNpadButton_Right;
-    uint64_t directions = 0;
-    if (held & HidNpadButton_AnyUp) directions |= HidNpadButton_Up;
-    if (held & HidNpadButton_AnyDown) directions |= HidNpadButton_Down;
-    if (held & HidNpadButton_AnyLeft) directions |= HidNpadButton_Left;
-    if (held & HidNpadButton_AnyRight) directions |= HidNpadButton_Right;
-    for (unsigned index = 0; index < 2; ++index) {
-        const auto stick = padGetStickPos(&data.pad, index);
-        if (stick.y > 16000) directions |= HidNpadButton_Up;
-        if (stick.y < -16000) directions |= HidNpadButton_Down;
-        if (stick.x < -16000) directions |= HidNpadButton_Left;
-        if (stick.x > 16000) directions |= HidNpadButton_Right;
-    }
-    const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
-    data.pressed = (data.pressed & ~directionMask) | data.directionRepeat.update(directions, now);
-
-    if (data.fallback) return;
-    const bool menu = !data.cards.empty() && !data.tabs.empty() && data.lines.empty() && data.current.empty();
-    if (menu) {
-        // Section changes consume this input update, avoiding activation in a
-        // different section from the one the user saw when pressing A.
-        if (data.pressed & (HidNpadButton_L | HidNpadButton_R)) {
-            data.tabSelection = static_cast<int>(moveSelection(static_cast<size_t>(data.activeTab), data.tabs.size(), data.pressed & HidNpadButton_R ? 1 : -1));
-            data.focus = {};
-        } else {
-            if (data.pressed & HidNpadButton_Up) moveFocus(Direction::Up);
-            else if (data.pressed & HidNpadButton_Down) moveFocus(Direction::Down);
-            else if (data.pressed & HidNpadButton_Left) moveFocus(Direction::Left);
-            else if (data.pressed & HidNpadButton_Right) moveFocus(Direction::Right);
-            if (data.pressed & HidNpadButton_B) data.focus.sidebar = true;
-            if (data.tabSelection < 0) {
-                if (data.pressed & HidNpadButton_A) {
-                    const int selected = data.focus.activate(data.cards.size());
-                    if (selected >= 0) data.cardAction = data.cards[static_cast<size_t>(selected)].action;
-                } else if (data.pressed & (HidNpadButton_X | HidNpadButton_Y | HidNpadButton_ZL)) {
-                    for (size_t index = 0; index < data.cards.size(); ++index) {
-                        if (data.cards[index].action & data.pressed) {
-                            data.focus = {index, false};
-                            data.cardAction = data.cards[index].action;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    HidTouchScreenState touch{};
-    hidGetTouchScreenStates(&touch, 1);
-    const bool down = touch.count > 0;
-    if (down && !data.touchDown) {
-        data.touchStartX = static_cast<int>(touch.touches[0].x);
-        data.touchStartY = data.lastTouchY = static_cast<int>(touch.touches[0].y);
-        data.dragged = false;
-    } else if (!down && data.touchDown && !data.dragged) {
-        // Activate only on release: starting a swipe on the focused folder
-        // must not open it before the user's finger has moved.
-        const int x = data.touchStartX;
-        const int y = data.touchStartY;
-        if (!data.tabs.empty() && x >= 16 && x < 228 && y >= 204 && y < 508) {
-            const int index = (y - 204) / 76;
-            if (index < static_cast<int>(data.tabs.size()) && (y - 204) % 76 < 62) { data.tabSelection = index; data.focus = {0, true}; data.cardAction = 0; }
-        }
-        for (size_t index = 0; data.lines.empty() && index < data.cards.size(); ++index) {
-            const HitBox box{292 + static_cast<int>(index % 2) * 478, (data.applet ? 220 : 166) + static_cast<int>(index / 2) * 182, 458, 164};
-            if (hitTest(box, x, y)) {
-                data.focus = {index, false};
-                data.cardAction = data.cards[index].action;
-            }
-        }
-        if (data.lines.empty()) data.rowSelection = touchedRow(x, y, data.selectedRow, data.rows.size(), data.applet);
-        if (data.rowSelection >= 0 && static_cast<size_t>(data.rowSelection) == data.selectedRow) data.pressed |= HidNpadButton_A;
-    } else if (down && data.touchDown) {
-        const int y = static_cast<int>(touch.touches[0].y);
-        if (std::abs(y - data.touchStartY) >= 16 || std::abs(static_cast<int>(touch.touches[0].x) - data.touchStartX) >= 16) data.dragged = true;
-        // Treat a finger drag as a list scroll.  The threshold prevents a
-        // normal tap from changing focus before it confirms the selected row.
-        if (data.lines.empty() && !data.rows.empty() && y >= (data.applet ? 220 : 166) && y < 620 && std::abs(y - data.lastTouchY) >= 36) {
-            data.dragged = true;
-            data.pressed |= y < data.lastTouchY ? HidNpadButton_Down : HidNpadButton_Up;
-            data.lastTouchY = y;
-        }
-    }
-    data.touchDown = down;
-    #endif
-}
-
-uint64_t Ui::keysDown() const { return impl_->pressed; }
-int Ui::takeTabSelection() { const int value = impl_->tabSelection; impl_->tabSelection = -1; return value; }
-
-Ui& instance() { static Ui ui; return ui; }
-
-int writef(const char* format, ...) {
-    std::array<char, 4096> buffer{};
-    va_list args;
-    va_start(args, format);
-    const int written = std::vsnprintf(buffer.data(), buffer.size(), format, args);
-    va_end(args);
-    instance().write(buffer.data());
-    return written;
-}
-
-void clear() { instance().clear(); }
-void present() { instance().present(); }
-void scanInput() { instance().scanInput(); }
-uint64_t keysDown() { return instance().keysDown(); }
+void Ui::shutdown() { impl_->initialized = false; }
 
 } // namespace switchdrive::ui

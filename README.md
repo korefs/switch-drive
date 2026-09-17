@@ -48,12 +48,14 @@ to the microSD card, and optionally install supported packages from the console.
   FAT32 per-file limit while preserving one logical filename on the Switch.
 - Standalone NRO installation and transactional NSP/NSZ installation for one
   base game, update, or DLC per package.
-- Downgrade protection, selectable SD/internal installation storage,
-  interrupted-install recovery, and managed component removal that preserves
-  save data.
-- Local download library with optional package cleanup after installation.
+- Downgrade protection, selectable SD/internal installation storage, and
+  interrupted-install recovery.
+- Local library for downloaded packages. Successfully installed packages are
+  deleted automatically; cleanup failures leave them available for manual deletion.
 - Controller and touch navigation in English (US), Portuguese (Brazil), and
   Spanish.
+- Borealis-based interface with the classic Switch sidebar, native focus and
+  footer behavior, automatic light/dark themes, and 1280x720 scaling.
 - Two interchangeable self-hosted pairing services: Node.js/Docker or
   Cloudflare Workers.
 
@@ -176,8 +178,8 @@ downloads remain available in applet mode, where the app displays a warning.
 2. Scan the QR code, or open the displayed URL and enter its six-digit code.
 3. Approve read-only Drive access, return to the Switch, and press **A** to
    check the pairing.
-4. Open **Files**, select a file, then press **X** to download or **Y** to
-   download and install.
+4. Open **Files**, select a file, then choose **Download** or **Download and
+   install** from its action menu.
 
 Pairing requests expire after ten minutes. Connecting another account makes it
 the active account; a full account switcher is not implemented yet.
@@ -221,19 +223,19 @@ console state, logs, OAuth credentials, or tunnel tokens.
 | Input | Action |
 | --- | --- |
 | D-pad or either stick | Move the selection; hold to repeat |
-| **A** | Activate; open a folder; install a Library NSP/NSZ |
+| **A** | Activate; open a folder; choose an action for a file; install a Library NSP/NSZ |
 | **B** | Go back; pause/cancel an active network operation |
-| **X** in Files | Download the selected file |
-| **Y** in Files | Download and install the selected file |
-| **X** in Library | Confirm uninstall of a managed NSP component |
-| **Y** in Library | Delete the package or offer managed uninstall |
+| **X** in Files | Choose the storage provider |
+| **Y** in Files | Choose **My Drive** or **Shared with me** |
+| **Y** in Library | Delete the downloaded package |
 | **L/R** | Change the main section |
-| **L** while browsing | Toggle **My Drive** and **Shared with me** |
-| **Y** in Settings | Cycle `en-US` → `pt-BR` → `es-ES` |
-| **ZL** in Settings | Add a Home Storage provider |
-| **ZL** in Home Storage | Hide an entry when catalog management is allowed |
+| **ZL** in Files | Hide an entry when catalog management is allowed |
 | **+** | Exit |
-| Touch | Select tabs, cards, and rows; tap again to activate; swipe to scroll |
+| Touch | Select tabs, cells, and rows; swipe to scroll |
+
+Settings are ordinary cells activated with **A**. Language changes are saved
+immediately and applied on the next launch so the Borealis chrome and app text
+always use the same locale.
 
 ## Self-host the pairing service
 
@@ -257,16 +259,19 @@ The REST contract is documented in [the OpenAPI specification](./docs/openapi.ya
 
 ### Switch client
 
-Install devkitPro with `switch-dev`, `switch-curl`, `switch-mbedtls`,
-`switch-zstd`, `switch-jansson`, `switch-sdl2`, and `switch-sdl2_ttf`, then run:
+Clone recursively, then install devkitPro with `switch-dev`, `switch-curl`,
+`switch-mbedtls`, `switch-zstd`, `switch-jansson`, and `switch-glm`. The client
+uses the Deko3D Borealis backend and no longer depends on SDL2 or SDL_ttf.
 
 ```sh
 make
 python3 tests/check_nro.py switch-drive.nro
 ```
 
-The packaging check verifies the NRO header and its embedded icon, NACP, and
-RomFS assets.
+The root `make` command configures the Switch CMake toolchain, builds Borealis,
+packages its shaders/materials/system icons, and still writes
+`switch-drive.nro` at the repository root. The packaging check verifies the NRO
+header and its embedded icon, NACP, and RomFS assets.
 
 ### Portable C++ tests
 
@@ -283,22 +288,21 @@ ctest --test-dir build/tests --output-on-failure
 The host needs CMake 3.24+, a C++20 compiler, zstd, and mbedTLS crypto headers
 and libraries.
 
-### Optional UI preview and runtime simulation
+### Optional UI preview
 
-Install host SDL2, SDL2_ttf, and pkg-config, then configure either option:
+The portable preview produces 1280x720 light/dark samples for all three
+languages without requiring Switch services:
 
 ```sh
 cmake -S tests -B build/preview \
-  -DSWITCHDRIVE_UI_PREVIEW=ON \
-  -DSWITCHDRIVE_UI_RUNTIME_TESTS=ON
+  -DSWITCHDRIVE_UI_PREVIEW=ON
 cmake --build build/preview
-SWITCHDRIVE_PREVIEW_FONT=/path/to/font.ttf ctest --test-dir build/preview --output-on-failure
-SWITCHDRIVE_PREVIEW_FONT=/path/to/font.ttf build/preview/switch_drive_ui_preview
+build/preview/switch_drive_ui_preview build/ui-preview.html
 ```
 
-Preview images are written to `build/ui-preview/`. These tests exercise the
-real renderer with host or simulated services; they do not emulate Switch HID,
-the compositor, memory limits, or NCM permissions.
+Open `build/ui-preview.html` in a browser. It exercises the same immutable UI
+models but does not emulate Switch HID, the compositor, memory limits, or NCM
+permissions; final acceptance still requires hardware.
 
 ### TypeScript services
 
@@ -331,9 +335,11 @@ docker build --target test -t switch-drive-home-storage-tests .
 - NSP/NSZ mutations are journaled before NCM changes. On the next launch, the
   app checks live metadata and either completes or rolls back recovery.
 - Existing content remains registered until replacement metadata commits.
-- Managed removal deletes only the selected base, update, or DLC component
-  after orphan checks. Switch Drive never calls save-data deletion APIs.
-- Package cleanup happens only after a confirmed installation.
+- The Library never removes installed titles or save data; it only deletes
+  downloaded package files.
+- Package cleanup is always attempted after a confirmed installation. A cleanup
+  failure does not turn the installation into a failure and leaves the package in
+  the Library for manual deletion.
 - Home Storage mounts the host library read-only. Hiding an entry changes only
   its SQLite catalog and never deletes the host file.
 
@@ -369,6 +375,7 @@ appropriate FS patches remain the operator's responsibility.
 | `docs/openapi.yaml` | Pairing service API contract |
 | `deploy/` | Caddy reverse-proxy configuration |
 | `third_party/Goldleaf/` | Pinned Goldleaf reference for NCM integration |
+| `third_party/borealis/` | Pinned Borealis UI framework and Switch resources |
 
 The NSP/NSZ installer follows the NCM approach from
 [Goldleaf](https://github.com/XorTroll/Goldleaf). NCZ streaming implements the

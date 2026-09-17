@@ -1,3 +1,4 @@
+#include "switchdrive/app_controller.hpp"
 #include "switchdrive/core.hpp"
 #include "switchdrive/i18n.hpp"
 #include "switchdrive/network.hpp"
@@ -6,10 +7,12 @@
 
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 #include <zstd.h>
@@ -215,7 +218,7 @@ void testHttpActivity() {
 void testDownloadRemoval(const fs::path& root) {
     std::string error;
     for (const auto kind : {StorageKind::Regular, StorageKind::Concatenated}) {
-        for (const bool installed : {false, true}) {
+        {
             StateStore store(root / makeId());
             State state;
             Task task;
@@ -234,13 +237,6 @@ void testDownloadRemoval(const fs::path& root) {
             item.localPath = task.localPath;
             item.storageKind = kind;
             item.localState = LocalState::Present;
-            if (installed) {
-                item.installed = InstallKind::Nsp;
-                item.nspInstallState = NspInstallState::Installed;
-                item.nspMetaId = "0100000000001000";
-                item.nspVersion = 42;
-                item.installedContentId = "content";
-            }
             state.library.push_back(item);
             LocalFile file;
             assert(file.create(task.localPath, kind, error, 8));
@@ -251,23 +247,9 @@ void testDownloadRemoval(const fs::path& root) {
             assert(!LocalFile::exists(task.localPath, kind));
             const State loaded = store.load();
             assert(loaded.tasks.size() == 1 && loaded.tasks[0].id == "unrelated");
-            assert(loaded.library.size() == (installed ? 1U : 0U));
-            if (installed) {
-                assert(loaded.library[0].localState == LocalState::Missing);
-                assert(loaded.library[0].installed == InstallKind::Nsp);
-                assert(loaded.library[0].nspInstallState == NspInstallState::Installed);
-                assert(loaded.library[0].nspMetaId == item.nspMetaId && loaded.library[0].nspVersion == 42);
-                assert(loaded.library[0].installedContentId == "content");
-            }
+            assert(loaded.library.empty());
             // Already missing files can still have their stale download records removed.
             state.library = {item};
-            state.library[0].installed = InstallKind::None;
-            state.library[0].nspInstallState = NspInstallState::None;
-            assert(store.removeDownload(state, state.library[0].id, error));
-            assert(state.library.empty());
-            state.library = {item};
-            state.library[0].installed = InstallKind::None;
-            state.library[0].nspInstallState = NspInstallState::Failed;
             assert(store.removeDownload(state, state.library[0].id, error));
             assert(state.library.empty());
 
@@ -290,6 +272,27 @@ void testDownloadRemoval(const fs::path& root) {
             assert(!store.removeDownload(state, item.id, error));
             assert(error == tr(TextId::DownloadRemovalPending) && state.library.size() == 1);
         }
+    }
+}
+
+void waitForOperation(AppController& controller) {
+    for (int attempt = 0; attempt < 1000 && controller.operationSnapshot().busy; ++attempt)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(!controller.operationSnapshot().busy);
+}
+
+void testControllerWorkers(const fs::path& root) {
+    {
+        AppController controller(root / "sequential", false);
+        for (int attempt = 0; attempt < 12; ++attempt) {
+            controller.beginPairing();
+            waitForOperation(controller);
+        }
+    }
+    // Destruction must cancel and join an operation that may still be starting.
+    {
+        AppController controller(root / "destroy-active", false);
+        controller.beginPairing();
     }
 }
 
@@ -353,75 +356,68 @@ int main() {
     // format information against an independently implemented QR encoder.
     assert(qrHash == 4030055473U);
     assert(!qr::encode(std::string(214, 'a')));
-    assert(ui::hitTest({10, 10, 52, 52}, 61, 61) && !ui::hitTest({10, 10, 52, 52}, 62, 62));
-    assert(ui::moveSelection(0, 4, -1) == 3 && ui::moveSelection(3, 4, 1) == 0);
-    assert(ui::moveSelection(0, 4, -1, false) == 0 && ui::moveSelection(3, 4, 1, false) == 3);
-    assert(ui::viewportStart(0, 20, 13) == 0 && ui::viewportStart(12, 20, 13) == 0 && ui::viewportStart(13, 20, 13) == 1 && ui::viewportStart(19, 20, 13) == 7);
-    // Touch coordinates use the same row geometry as the renderer, including
-    // applet banners, scrolling, row gaps, and out-of-bounds taps.
-    assert(ui::touchedRow(300, 170, 0, 20, false) == 0);
-    assert(ui::touchedRow(300, 170, 10, 20, false) == 5);
-    assert(ui::touchedRow(300, 224, 0, 20, true) == 0);
-    assert(ui::touchedRow(300, 170, 0, 20, true) == -1);
-    assert(ui::touchedRow(300, 230, 0, 20, false) == -1);
-    assert(ui::touchedRow(1240, 170, 0, 20, false) == -1);
-    assert(ui::touchedRow(300, 170, 0, 0, false) == -1);
-    assert(ui::touchedRow(300, 566, 19, 20, true) == -1);
-    // Home/Settings use a two-column grid with an incomplete last row.
-    // A must activate whichever card the Joy-Con selected, including X/Y cards.
-    ui::MenuFocus focus;
-    const std::array<int, 3> cardActions{1, 4, 8};
-    assert(focus.activate(3) == 0);
-    assert(focus.move(ui::Direction::Right, 3, 0, 4) == -1 && focus.card == 1);
-    assert(cardActions[focus.activate(3)] == 4);
-    focus.move(ui::Direction::Down, 3, 0, 4);
-    assert(focus.card == 2 && cardActions[focus.activate(3)] == 8);
-    focus.move(ui::Direction::Right, 3, 0, 4);
-    focus.move(ui::Direction::Down, 3, 0, 4);
-    assert(focus.card == 2); // No phantom fourth card.
-    focus.move(ui::Direction::Up, 3, 0, 4);
-    assert(focus.card == 0);
-    focus.move(ui::Direction::Left, 3, 0, 4);
-    assert(focus.sidebar);
-    assert(focus.move(ui::Direction::Up, 3, 0, 4) == 3);
-    assert(focus.move(ui::Direction::Down, 3, 3, 4) == 0);
-    assert(focus.activate(3) == -1 && !focus.sidebar);
-    assert(focus.activate(3) == 0);
-    focus.move(ui::Direction::Right, 1, 1, 4);
-    focus.move(ui::Direction::Down, 1, 1, 4);
-    assert(focus.card == 0 && focus.activate(1) == 0);
-    focus.move(ui::Direction::Left, 1, 1, 4);
-    focus.move(ui::Direction::Right, 1, 1, 4);
-    assert(!focus.sidebar);
-    assert(focus.activate(0) == -1);
-    focus = {2, false};
-    assert(focus.activate(1) == 0); // A smaller page clamps old focus.
-    ui::DirectionRepeat repeat;
-    assert(repeat.update(1, 1000) == 1);
-    assert(repeat.update(1, 1349) == 0);
-    assert(repeat.update(1, 1350) == 1);
-    assert(repeat.update(1, 1449) == 0);
-    assert(repeat.update(1, 1450) == 1);
-    assert(repeat.update(2, 1460) == 2); // Direction change responds immediately.
-    assert(repeat.update(0, 1470) == 0);
-    assert(repeat.update(2, 1480) == 2); // Releasing resets the initial delay.
-    assert(repeat.update(2, 1700) == 0);
+    State screenState;
+    screenState.accounts.push_back({"account", "player@example.com", "Player"});
+    screenState.lastAccountId = "account";
+    screenState.tasks.push_back({});
+    screenState.tasks.back().id = "paused-transfer";
+    screenState.tasks.back().displayName = "Paused.nsp";
+    screenState.tasks.back().state = TaskState::Paused;
+    LibraryItem screenItem;
+    screenItem.id = "library-item";
+    screenItem.name = "Example.nsp";
+    screenItem.localPath = (fs::temp_directory_path() / "switch-drive-ui-model-missing.nsp").string();
+    screenItem.localState = LocalState::Present;
+    screenItem.size = 1024;
+    screenState.library.push_back(screenItem);
+    const auto homeModel = ui::makeHomeModel(screenState, true, false);
+    assert(homeModel.account == "player@example.com" && homeModel.activeTasks == 1 &&
+        homeModel.libraryItems == 1 && homeModel.appletMode && !homeModel.networkReady);
+    const auto transfersModel = ui::makeTransfersModel(screenState, {});
+    assert(transfersModel.entries.size() == 1 && transfersModel.entries[0].id == "paused-transfer" &&
+        transfersModel.entries[0].title == "Paused.nsp" && transfersModel.entries[0].detail == tr(TextId::Paused) &&
+        !transfersModel.busy && !transfersModel.cancellable);
+    const auto libraryModel = ui::makeLibraryModel(screenState, true);
+    assert(libraryModel.entries.size() == 1 && !libraryModel.entries[0].available &&
+        !libraryModel.entries[0].canInstall && libraryModel.entries[0].canRemovePackage);
+    const auto settingsModel = ui::makeSettingsModel(screenState);
+    assert(settingsModel.account == "player@example.com" && settingsModel.languageCode == "en-US");
+    ui::OperationGate gate;
+    const auto generation = gate.start(ui::OperationPhase::Downloading, "transfer", "starting", true);
+    assert(generation != 0 && gate.start(ui::OperationPhase::Installing, "other", "", false) == 0);
+    assert(gate.update(generation, 25, 100, 50, 2));
+    auto operation = gate.snapshot();
+    assert(operation.busy && operation.current == 25 && operation.total == 100 && operation.etaSeconds == 2);
+    screenState.tasks.back().state = TaskState::Downloading;
+    operation.title = tr(TextId::Transfers);
+    const auto activeTransfers = ui::makeTransfersModel(screenState, operation);
+    assert(activeTransfers.busy && activeTransfers.cancellable && activeTransfers.entries.size() == 1 &&
+        activeTransfers.entries[0].detail.find("25.0%") != std::string::npos);
+    operation.title = tr(TextId::Files);
+    assert(!ui::makeTransfersModel(screenState, operation).busy);
+    assert(gate.requestCancel() && !gate.shouldContinue(generation));
+    assert(!gate.update(generation + 1, 50, 100));
+    assert(gate.finish(generation, ui::OperationPhase::Paused, "paused"));
+    assert(!gate.snapshot().busy && gate.snapshot().phase == ui::OperationPhase::Paused);
     for (const auto language : {Language::EnUs, Language::PtBr, Language::EsEs}) {
         setLanguage(language);
         for (const auto id : {TextId::ButtonA, TextId::ButtonX, TextId::ButtonY,
                 TextId::Folder, TextId::FileSize, TextId::HomeSubtitle,
                 TextId::FilesSubtitle, TextId::LibrarySubtitle,
                 TextId::SettingsSubtitle, TextId::NetworkUnavailable,
-                TextId::AutoCleanup, TextId::Ellipsis, TextId::ControllerReady,
+                TextId::Ellipsis, TextId::ControllerReady,
                 TextId::ControllerMissing, TextId::InputUnfocused,
-                TextId::AppVersion}) assert(std::strlen(tr(id)) > 0);
+                TextId::AppVersion, TextId::ButtonL, TextId::ButtonR,
+                TextId::Download, TextId::DownloadAndInstall, TextId::Back,
+                TextId::NoActiveTransfers,
+                TextId::RestartRequired, TextId::ExitConfirm,
+                TextId::ExitActiveConfirm}) assert(std::strlen(tr(id)) > 0);
     }
     assert(parseLanguage("invalid") == Language::EnUs);
     setLanguage(Language::EnUs);
     assert(std::string(tr(TextId::Files)) == "Files");
     assert(std::string(tr(TextId::Settings)) == "Settings");
     assert(std::string(tr(TextId::ActiveAccount)) == "Active account: %s");
-    assert(std::string(tr(TextId::CleanupAfterInstall)) == "Cleanup after install: %s");
     assert(std::string(tr(TextId::NcaMissingDuringInstall)) == "NCA missing during installation");
     assert(std::string(tr(TextId::AppletModeWarning)).find("Application mode") != std::string::npos);
     setLanguage(Language::PtBr);
@@ -462,6 +458,7 @@ int main() {
     const fs::path root = fs::temp_directory_path() / ("switch-drive-test-" + makeId());
     fs::create_directories(root);
     testDownloadRemoval(root / "removal");
+    testControllerWorkers(root / "workers");
     std::string error;
 
     const auto regularPath = root / "sequential.bin";
@@ -509,8 +506,8 @@ int main() {
     State saved;
     saved.serviceUrl = "https://drive.test";
     saved.sessionToken = "not-a-real-token";
-    saved.deleteAfterInstall = false;
     saved.language = "es-ES";
+    saved.providers[0].lastFolderId = "saved-folder";
     Task task;
     task.id = "task1";
     task.providerId = "google-drive";
@@ -546,12 +543,22 @@ int main() {
     saved.sessionToken = "latest-token";
     assert(store.save(saved, error));
     State loaded = store.load();
-    assert(loaded.schemaVersion == 5 && loaded.language == "es-ES" && loaded.sessionToken == "latest-token" && loaded.tasks.size() == 1 && loaded.library.size() == 1);
+    assert(loaded.schemaVersion == 6 && loaded.language == "es-ES" && loaded.sessionToken == "latest-token" && loaded.tasks.size() == 1 && loaded.library.size() == 1);
     assert(loaded.tasks[0].providerId == "google-drive" && loaded.tasks[0].committedBytes == task.committedBytes && loaded.tasks[0].storageKind == StorageKind::Concatenated);
     assert(loaded.tasks[0].revision == "42" && loaded.tasks[0].etag == "\"etag\"");
     assert(loaded.library[0].providerId == "google-drive" && loaded.library[0].md5 == task.md5);
     const auto homeProvider = std::find_if(loaded.providers.begin(), loaded.providers.end(), [](const ProviderConfig& p){ return p.id == "home-test"; });
-    assert(loaded.providers.size() == 2 && homeProvider != loaded.providers.end() && homeProvider->kind == ProviderKind::HomeStorage && homeProvider->canManageCatalog);
+    assert(loaded.providers.size() == 2 && loaded.providers[0].lastFolderId == "saved-folder" &&
+        homeProvider != loaded.providers.end() && homeProvider->kind == ProviderKind::HomeStorage && homeProvider->canManageCatalog);
+    {
+        std::ifstream current(root / "state-v2" / "state.json");
+        const std::string contents((std::istreambuf_iterator<char>(current)), {});
+        assert(contents.find("\"schemaVersion\":6") != std::string::npos);
+        for (const char* obsolete : {"\"deleteAfterInstall\"", "\"installKind\"", "\"installed\"",
+                "\"installedPath\"", "\"installedContentId\"", "\"nspInstallState\"",
+                "\"nspMetaId\"", "\"nspBaseTitleId\"", "\"nspVersion\""})
+            assert(contents.find(obsolete) == std::string::npos);
+    }
     {
         std::ifstream backup(root / "state-v2" / "state.json.bak");
         const std::string contents((std::istreambuf_iterator<char>(backup)), {});
@@ -562,7 +569,7 @@ int main() {
         languageState.language = language;
         StateStore languageStore(root / (std::string("language-") + language));
         assert(languageStore.save(languageState, error));
-        assert(languageStore.load().schemaVersion == 5 && languageStore.load().language == language);
+        assert(languageStore.load().schemaVersion == 6 && languageStore.load().language == language);
     }
 
     // Existing schema v1 state keeps its catalog entries and adopts regular storage.
@@ -573,23 +580,41 @@ int main() {
         v1 << "{\"schemaVersion\":1,\"serviceUrl\":\"https://drive.test\",\"library\":[{\"id\":\"old\",\"accountId\":\"a\",\"remoteId\":\"r\",\"name\":\"old.nsp\",\"localPath\":\"/tmp/old.nsp\",\"md5\":\"x\"}]}";
     }
     State migrated = StateStore(v1Root).load();
-    assert(migrated.schemaVersion == 5 && migrated.activeProviderId == "google-drive" && migrated.providers.size() == 1 && migrated.providers[0].kind == ProviderKind::GoogleDrive && migrated.language == "en-US" && migrated.library.size() == 1 && migrated.library[0].providerId == "google-drive" && migrated.library[0].storageKind == StorageKind::Regular && migrated.library[0].nspInstallState == NspInstallState::None && migrated.tasks.empty());
+    assert(migrated.schemaVersion == 6 && migrated.activeProviderId == "google-drive" && migrated.providers.size() == 1 && migrated.providers[0].kind == ProviderKind::GoogleDrive && migrated.language == "en-US" && migrated.library.size() == 1 && migrated.library[0].providerId == "google-drive" && migrated.library[0].storageKind == StorageKind::Regular && migrated.tasks.empty());
 
     const auto v2Root = root / "state-v2-migration";
     fs::create_directories(v2Root);
     { std::ofstream v2(v2Root / "state.json"); v2 << "{\"schemaVersion\":2,\"tasks\":[]}"; }
-    assert(StateStore(v2Root).load().schemaVersion == 5 && StateStore(v2Root).load().language == "en-US");
+    assert(StateStore(v2Root).load().schemaVersion == 6 && StateStore(v2Root).load().language == "en-US");
 
     const auto v3Root = root / "state-v3";
     fs::create_directories(v3Root);
     { std::ofstream v3(v3Root / "state.json"); v3 << "{\"schemaVersion\":3}"; }
-    assert(StateStore(v3Root).load().schemaVersion == 5 && StateStore(v3Root).load().language == "en-US");
+    assert(StateStore(v3Root).load().schemaVersion == 6 && StateStore(v3Root).load().language == "en-US");
     const auto v4Root = root / "state-v4";
     fs::create_directories(v4Root);
     { std::ofstream v4(v4Root / "state.json"); v4 << "{\"schemaVersion\":4,\"sessionToken\":\"legacy-session\",\"accounts\":[{\"id\":\"a\",\"email\":\"old@example.test\"}],\"tasks\":[{\"id\":\"t\",\"accountId\":\"a\",\"remoteId\":\"remote\",\"displayName\":\"old.nsp\",\"expectedSize\":1}],\"library\":[{\"id\":\"l\",\"accountId\":\"a\",\"remoteId\":\"remote\",\"name\":\"old.nsp\",\"size\":1}]}"; }
     const State migratedV4 = StateStore(v4Root).load();
-    assert(migratedV4.schemaVersion == 5 && migratedV4.sessionToken == "legacy-session" && migratedV4.accounts.size() == 1 && migratedV4.tasks.size() == 1 && migratedV4.library.size() == 1);
+    assert(migratedV4.schemaVersion == 6 && migratedV4.sessionToken == "legacy-session" && migratedV4.accounts.size() == 1 && migratedV4.tasks.size() == 1 && migratedV4.library.size() == 1);
     assert(migratedV4.tasks[0].providerId == "google-drive" && migratedV4.library[0].providerId == "google-drive" && migratedV4.providers.size() == 1);
+    const auto v5Root = root / "state-v5";
+    fs::create_directories(v5Root);
+    const auto legacyInstalledPackage = v5Root / "downloads" / "installed-package" / "installed.nsp";
+    fs::create_directories(legacyInstalledPackage.parent_path());
+    { std::ofstream package(legacyInstalledPackage); package << "package"; }
+    {
+        std::ofstream v5(v5Root / "state.json");
+        v5 << R"({"schemaVersion":5,"lastFolderId":"legacy-folder","activeProviderId":"google-drive","deleteAfterInstall":false,"providers":[{"id":"google-drive","kind":"google-drive","lastFolderId":"root"}],"tasks":[{"id":"kept-task","providerId":"google-drive","installAfterDownload":true,"deleteAfterInstall":false}],"library":[{"id":"installed-package","providerId":"google-drive","name":"installed.nsp","localPath":")"
+           << legacyInstalledPackage.string()
+           << R"(","localState":"present","installed":"nsp","nspInstallState":"installed","nspMetaId":"0100000000001000","nspVersion":42},{"id":"deleted-package","providerId":"google-drive","name":"deleted.nsp","localPath":"/tmp/deleted.nsp","localState":"removedAfterInstall","installed":"nsp"}]})";
+    }
+    const State migratedV5 = StateStore(v5Root).load();
+    assert(migratedV5.schemaVersion == 6 && migratedV5.providers.size() == 1 &&
+        migratedV5.providers[0].lastFolderId == "legacy-folder");
+    assert(migratedV5.tasks.size() == 1 && migratedV5.tasks[0].installAfterDownload);
+    assert(migratedV5.library.size() == 1 && migratedV5.library[0].id == "installed-package" &&
+        migratedV5.library[0].localState == LocalState::Present &&
+        LocalFile::exists(migratedV5.library[0].localPath, migratedV5.library[0].storageKind));
     const auto invalidLanguageRoot = root / "state-invalid-language";
     fs::create_directories(invalidLanguageRoot);
     { std::ofstream invalid(invalidLanguageRoot / "state.json"); invalid << "{\"schemaVersion\":4,\"language\":\"es-es\"}"; }
