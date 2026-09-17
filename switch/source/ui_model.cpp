@@ -1,5 +1,6 @@
 #include "switchdrive/ui_model.hpp"
 #include "switchdrive/i18n.hpp"
+#include "switchdrive/network.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -25,14 +26,51 @@ std::string providerName(const State& state) {
 }
 
 std::string itemDetail(const LibraryItem& item) {
-    if (item.nspInstallState == NspInstallState::Installed)
-        return i18n::tr(i18n::TextId::ManagedNspInstalled);
     if (item.localState != LocalState::Present)
-        return i18n::tr(i18n::TextId::RemovedAfterInstall);
+        return i18n::tr(i18n::TextId::MissingFile);
     char text[64]{};
     std::snprintf(text, sizeof(text), i18n::tr(i18n::TextId::FileSize),
         static_cast<double>(item.size) / (1024.0 * 1024.0));
     return text;
+}
+
+bool activeTransfer(TaskState state) {
+    return state == TaskState::Queued || state == TaskState::Downloading ||
+        state == TaskState::Verifying || state == TaskState::Installing || state == TaskState::Paused;
+}
+
+bool matchesOperation(TaskState state, OperationPhase phase) {
+    switch (phase) {
+        case OperationPhase::Preparing: return state == TaskState::Queued;
+        case OperationPhase::Downloading: return state == TaskState::Downloading;
+        case OperationPhase::Verifying: return state == TaskState::Verifying;
+        case OperationPhase::Installing: return state == TaskState::Installing;
+        default: return false;
+    }
+}
+
+std::string transferDetail(const Task& task, const OperationSnapshot& operation, bool current) {
+    switch (task.state) {
+        case TaskState::Queued:
+            return i18n::tr(i18n::TextId::PreparingDownload);
+        case TaskState::Downloading: {
+            const uint64_t received = current && operation.total ? operation.current : task.committedBytes;
+            const uint64_t total = current && operation.total ? operation.total : task.expectedSize;
+            if (!total) return i18n::tr(i18n::TextId::ResumingDownload);
+            const TransferEstimate estimate = current
+                ? TransferEstimate{operation.bytesPerSecond, operation.etaSeconds, operation.bytesPerSecond > 0}
+                : TransferEstimate{};
+            return formatTransferProgress(received, total, estimate);
+        }
+        case TaskState::Paused:
+            return task.error.empty() ? i18n::tr(i18n::TextId::Paused) : task.error;
+        case TaskState::Verifying:
+            return i18n::tr(i18n::TextId::VerifyingDownload);
+        case TaskState::Installing:
+            return i18n::tr(i18n::TextId::InstallNsp);
+        default:
+            return {};
+    }
 }
 
 } // namespace
@@ -41,13 +79,31 @@ HomeModel makeHomeModel(const State& state, bool appletMode, bool networkReady) 
     HomeModel model;
     model.account = accountName(state);
     model.provider = providerName(state);
-    model.activeTasks = static_cast<size_t>(std::count_if(state.tasks.begin(), state.tasks.end(), [](const Task& task) {
-        return task.state == TaskState::Queued || task.state == TaskState::Downloading ||
-            task.state == TaskState::Verifying || task.state == TaskState::Installing || task.state == TaskState::Paused;
-    }));
+    model.activeTasks = static_cast<size_t>(std::count_if(state.tasks.begin(), state.tasks.end(),
+        [](const Task& task) { return activeTransfer(task.state); }));
     model.libraryItems = state.library.size();
     model.appletMode = appletMode;
     model.networkReady = networkReady;
+    return model;
+}
+
+TransfersModel makeTransfersModel(const State& state, const OperationSnapshot& operation) {
+    TransfersModel model;
+    model.busy = operation.busy && operation.title == i18n::tr(i18n::TextId::Transfers);
+    model.cancellable = model.busy && operation.cancellable;
+    const Task* current{};
+    if (model.busy) {
+        const auto found = std::find_if(state.tasks.begin(), state.tasks.end(), [&](const Task& task) {
+            return matchesOperation(task.state, operation.phase);
+        });
+        if (found != state.tasks.end()) current = &*found;
+    }
+    for (const auto& task : state.tasks) {
+        if (!activeTransfer(task.state)) continue;
+        model.entries.push_back({task.id,
+            task.displayName.empty() ? i18n::tr(i18n::TextId::Transfers) : task.displayName,
+            transferDetail(task, operation, &task == current), task.state});
+    }
     return model;
 }
 
@@ -57,15 +113,11 @@ LibraryModel makeLibraryModel(const State& state, bool appletMode) {
     model.entries.reserve(state.library.size());
     for (const auto& item : state.library) {
         const bool available = item.localState == LocalState::Present && LocalFile::exists(item.localPath, item.storageKind);
-        const bool managed = item.installed == InstallKind::Nsp &&
-            item.nspInstallState == NspInstallState::Installed && !item.nspMetaId.empty();
         const bool installable = isInstallablePackage(item.name) || isNro(item.name);
         model.entries.push_back({
             item.id, item.name, itemDetail(item), available, installable,
-            item.installed != InstallKind::None, managed,
             available && installable && !appletMode,
             available,
-            managed && !appletMode,
         });
     }
     return model;

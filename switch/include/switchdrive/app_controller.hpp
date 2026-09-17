@@ -51,6 +51,7 @@ class AppController {
     void unsubscribe(size_t id);
 
     ui::HomeModel homeSnapshot() const;
+    ui::TransfersModel transfersSnapshot() const;
     ui::FilesModel filesSnapshot() const;
     ui::LibraryModel librarySnapshot() const;
     ui::SettingsModel settingsSnapshot() const;
@@ -80,7 +81,6 @@ class AppController {
 
     void installLibraryItem(size_t index, NspInstallStorage destination);
     void removeLibraryPackage(size_t index);
-    void uninstallLibraryItem(size_t index);
 
     void cancelOperation();
     bool appletMode() const;

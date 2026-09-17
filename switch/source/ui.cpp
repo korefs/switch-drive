@@ -21,6 +21,23 @@ namespace {
 
 using Row = std::pair<std::string, std::string>;
 
+void setActionHintHidden(brls::View* view, brls::ControllerButton button, bool hidden) {
+    const auto found = view->getAction(button);
+    if (found == view->getActions().end() || (*found)->isHidden() == hidden) return;
+    const auto action = *found;
+    view->registerAction(action->getHintText(), button, action->getActionListener(), hidden,
+        action->isAllowRepeating(), action->getSound());
+    view->setActionAvailable(button, action->isAvailable());
+}
+
+brls::Hints* findHints(brls::View* view) {
+    if (auto* hints = dynamic_cast<brls::Hints*>(view)) return hints;
+    if (auto* box = dynamic_cast<brls::Box*>(view))
+        for (auto* child : box->getChildren())
+            if (auto* hints = findHints(child)) return hints;
+    return nullptr;
+}
+
 brls::Label* label(const std::string& text, float size = 22, float height = 48) {
     auto* value = new brls::Label();
     value->setText(text);
@@ -60,14 +77,16 @@ class ModelDataSource final : public brls::RecyclerDataSource {
     using NearEnd = std::function<void()>;
     using Focus = std::function<void(size_t)>;
 
-    ModelDataSource(Rows rows, Select select, NearEnd nearEnd = {}, Focus focus = {})
-        : rows_(std::move(rows)), select_(std::move(select)), nearEnd_(std::move(nearEnd)), focus_(std::move(focus)) {}
+    ModelDataSource(Rows rows, Select select, NearEnd nearEnd = {}, Focus focus = {}, bool showSelectHint = true)
+        : rows_(std::move(rows)), select_(std::move(select)), nearEnd_(std::move(nearEnd)), focus_(std::move(focus)),
+          showSelectHint_(showSelectHint) {}
 
     int numberOfRows(brls::RecyclerFrame*, int) override { return static_cast<int>(rows_().size()); }
 
     brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler, brls::IndexPath index) override {
         auto rows = rows_();
         auto* cell = static_cast<brls::DetailCell*>(recycler->dequeueReusableCell("detail"));
+        if (!showSelectHint_) setActionHintHidden(cell, brls::BUTTON_A, true);
         if (auto* focusCell = dynamic_cast<FocusDetailCell*>(cell)) focusCell->setFocusAction(focus_);
         if (index.row >= 0 && static_cast<size_t>(index.row) < rows.size()) {
             cell->setText(rows[static_cast<size_t>(index.row)].first);
@@ -88,15 +107,20 @@ class ModelDataSource final : public brls::RecyclerDataSource {
     Select select_;
     NearEnd nearEnd_;
     Focus focus_;
+    bool showSelectHint_{};
 };
 
 class ObservedBox : public brls::Box {
   public:
     explicit ObservedBox(AppController& controller)
-        : brls::Box(brls::Axis::COLUMN), controller(controller), alive(std::make_shared<std::atomic<bool>>(true)) {
+        : brls::Box(brls::Axis::COLUMN), controller(controller), alive(std::make_shared<std::atomic<bool>>(true)),
+          refreshPending(std::make_shared<std::atomic<bool>>(false)) {
         auto guard = alive;
-        subscription = controller.subscribe([this, guard] {
-            brls::sync([this, guard] {
+        auto pending = refreshPending;
+        subscription = controller.subscribe([this, guard, pending] {
+            if (!guard->load() || pending->exchange(true)) return;
+            brls::sync([this, guard, pending] {
+                pending->store(false);
                 if (guard->load()) refresh();
             });
         });
@@ -111,10 +135,12 @@ class ObservedBox : public brls::Box {
 
   protected:
     AppController& controller;
+    std::shared_ptr<std::atomic<bool>> lifetimeGuard() const { return alive; }
 
   private:
     size_t subscription{};
     std::shared_ptr<std::atomic<bool>> alive;
+    std::shared_ptr<std::atomic<bool>> refreshPending;
 };
 
 class QrView final : public brls::View {
@@ -172,8 +198,10 @@ size_t focusedRow() {
 }
 
 void pushOperation(AppController& controller);
+void pushTransfers(AppController& controller);
 void pushPairing(AppController& controller);
 void pushHomeStorage(AppController& controller);
+std::atomic<bool> operationViewOpen{};
 
 class OperationView final : public ObservedBox {
   public:
@@ -197,6 +225,8 @@ class OperationView final : public ObservedBox {
         }, false, false, brls::SOUND_BACK);
         refresh();
     }
+
+    ~OperationView() override { operationViewOpen = false; }
 
     void refresh() override {
         const auto snapshot = controller.operationSnapshot();
@@ -224,7 +254,48 @@ void pushFramed(const std::string& title, brls::View* content) {
 }
 
 void pushOperation(AppController& controller) {
+    if (operationViewOpen.exchange(true)) return;
     pushFramed(i18n::tr(i18n::TextId::Transfers), new OperationView(controller));
+}
+
+class TransfersView final : public ObservedBox {
+  public:
+    explicit TransfersView(AppController& appController) : ObservedBox(appController) {
+        setPadding(24, 48, 24, 48);
+        recycler = new brls::RecyclerFrame();
+        recycler->setGrow(1);
+        recycler->registerCell("detail", [] { return new brls::DetailCell(); });
+        recycler->setDataSource(new ModelDataSource([this] { return rows(); }, {}, {}, {}, false));
+        addView(recycler);
+        registerAction(i18n::tr(i18n::TextId::Cancel), brls::BUTTON_B, [this](brls::View*) {
+            const auto model = controller.transfersSnapshot();
+            if (!model.cancellable) return false;
+            controller.cancelOperation();
+            return true;
+        }, false, false, brls::SOUND_BACK);
+        refresh();
+    }
+
+    void refresh() override {
+        const auto model = controller.transfersSnapshot();
+        recycler->reloadData();
+        setActionAvailable(brls::BUTTON_B, model.cancellable);
+    }
+
+  private:
+    brls::RecyclerFrame* recycler{};
+
+    std::vector<Row> rows() const {
+        const auto model = controller.transfersSnapshot();
+        std::vector<Row> values;
+        for (const auto& entry : model.entries) values.emplace_back(entry.title, entry.detail);
+        if (values.empty()) values.emplace_back(i18n::tr(i18n::TextId::NoActiveTransfers), "");
+        return values;
+    }
+};
+
+void pushTransfers(AppController& controller) {
+    pushFramed(i18n::tr(i18n::TextId::Transfers), new TransfersView(controller));
 }
 
 class PairingView final : public ObservedBox {
@@ -342,7 +413,7 @@ class HomeView final : public ObservedBox {
         recycler->setDataSource(new ModelDataSource([this] { return rows(); }, [this](size_t index) {
             if (index == 0) pushPairing(controller);
             else if (index == 1) navigate(1);
-            else if (index == 2) pushOperation(controller);
+            else if (index == 2) pushTransfers(controller);
             else if (index == 3) navigate(2);
         }));
         addView(warning);
@@ -381,7 +452,7 @@ class FilesView final : public ObservedBox {
         recycler->setGrow(1);
         recycler->registerCell("detail", [] { return new FocusDetailCell(); });
         recycler->setDataSource(new ModelDataSource([this] { return rows(); }, [this](size_t index) { select(index); },
-            [this] { controller.loadNextFilesPage(); }, [this](size_t index) { updateActions(index); }));
+            [this] { controller.loadNextFilesPage(); }, [this](size_t index) { updateActions(index); }, false));
         addView(recycler);
         recycler->registerAction(i18n::tr(i18n::TextId::StorageProviders), brls::BUTTON_X, [this](brls::View*) {
             chooseProvider();
@@ -397,7 +468,7 @@ class FilesView final : public ObservedBox {
             if (index >= model.entries.size() || !model.entries[index].canHide) return false;
             confirm(i18n::tr(i18n::TextId::HideCatalogConfirm), [this, index] { controller.hide(index); pushOperation(controller); });
             return true;
-        }, false, false, brls::SOUND_CLICK);
+        }, true, false, brls::SOUND_CLICK);
         // TabFrame also has a B action that focuses its sidebar. Registering
         // this on the recycler gives folder navigation priority while a row is
         // focused, then lets TabFrame handle B only at the root folder.
@@ -405,7 +476,11 @@ class FilesView final : public ObservedBox {
             if (controller.filesSnapshot().breadcrumb.empty()) return false;
             controller.backFolder();
             return true;
-        }, false, false, brls::SOUND_BACK);
+        }, true, false, brls::SOUND_BACK);
+        const auto guard = lifetimeGuard();
+        brls::sync([this, guard] {
+            if (guard->load()) setActionHintHidden(this, brls::BUTTON_B, true);
+        });
         refresh();
         if (controller.filesSnapshot().entries.empty()) controller.refreshFiles();
     }
@@ -532,13 +607,6 @@ class LibraryView final : public ObservedBox {
             confirm(i18n::tr(i18n::TextId::DeleteDownloadWarning), [this, index] { controller.removeLibraryPackage(index); });
             return true;
         }, false, false, brls::SOUND_CLICK);
-        recycler->registerAction(i18n::tr(i18n::TextId::RemoveNsp), brls::BUTTON_X, [this](brls::View*) {
-            const auto index = focusedRow();
-            const auto model = controller.librarySnapshot();
-            if (index >= model.entries.size() || !model.entries[index].canUninstall) return false;
-            confirm(i18n::tr(i18n::TextId::BaseRemovalWarning), [this, index] { controller.uninstallLibraryItem(index); pushOperation(controller); });
-            return true;
-        }, false, false, brls::SOUND_CLICK);
         refresh();
     }
 
@@ -558,7 +626,6 @@ class LibraryView final : public ObservedBox {
         const auto model = controller.librarySnapshot();
         const bool valid = index < model.entries.size();
         recycler->setActionAvailable(brls::BUTTON_Y, valid && model.entries[index].canRemovePackage);
-        recycler->setActionAvailable(brls::BUTTON_X, valid && model.entries[index].canUninstall);
     }
 
     std::vector<Row> rows() const {
@@ -632,12 +699,13 @@ class MainActivity final : public brls::Activity {
     brls::View* createContentView() override {
         tabs = new brls::TabFrame();
         auto navigate = [this](int page) { current = page; tabs->focusTab(page); };
-        tabs->addTab(i18n::tr(i18n::TextId::Home), [this, navigate] { current = 0; return new HomeView(controller, navigate); });
-        tabs->addTab(i18n::tr(i18n::TextId::Files), [this] { current = 1; return new FilesView(controller); });
-        tabs->addTab(i18n::tr(i18n::TextId::Library), [this] { current = 2; return new LibraryView(controller); });
-        tabs->addTab(i18n::tr(i18n::TextId::Settings), [this] { current = 3; return new SettingsView(controller); });
-        auto* frame = new brls::AppletFrame(tabs);
+        tabs->addTab(i18n::tr(i18n::TextId::Home), [this, navigate] { current = 0; setFilesHints(false); return new HomeView(controller, navigate); });
+        tabs->addTab(i18n::tr(i18n::TextId::Files), [this] { current = 1; setFilesHints(true); return new FilesView(controller); });
+        tabs->addTab(i18n::tr(i18n::TextId::Library), [this] { current = 2; setFilesHints(false); return new LibraryView(controller); });
+        tabs->addTab(i18n::tr(i18n::TextId::Settings), [this] { current = 3; setFilesHints(false); return new SettingsView(controller); });
+        frame = new brls::AppletFrame(tabs);
         frame->setTitle(i18n::tr(i18n::TextId::AppName));
+        footerHints = findHints(frame->getFooter());
         return frame;
     }
 
@@ -652,12 +720,24 @@ class MainActivity final : public brls::Activity {
             });
             return true;
         }, false, false, brls::SOUND_CLICK);
+        setFilesHints(current == 1);
     }
 
   private:
     AppController& controller;
     brls::TabFrame* tabs{};
+    brls::AppletFrame* frame{};
+    brls::Hints* footerHints{};
     int current{};
+
+    void setFilesHints(bool files) {
+        if (frame) {
+            setActionHintHidden(frame, brls::BUTTON_B, files);
+            setActionHintHidden(frame, brls::BUTTON_START, files);
+        }
+        if (footerHints) footerHints->setAddUnableAButtonAction(!files);
+        brls::Application::getGlobalHintsUpdateEvent()->fire();
+    }
 };
 
 } // namespace

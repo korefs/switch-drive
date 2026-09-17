@@ -228,7 +228,7 @@ class NspInstaller {
     bool parseCnmt(const void* data, size_t size, NspPackageInfo& info, std::string& error) const;
     bool queryInstalled(const NspPackageInfo& package, std::vector<InstalledNspInfo>& installed, std::string& error) const;
     bool install(const std::filesystem::path& source, StorageKind kind, const NspPackageInfo& package, NspInstallStorage destination, StateStore& store, NspInstallJournal& journal, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const;
-    bool recover(StateStore& store, NspInstallJournal& journal, std::string& error) const;
+    bool recover(StateStore& store, NspInstallJournal& journal, bool& installCommitted, std::string& error) const;
     bool uninstall(const InstalledNspInfo& target, StateStore& store, NspInstallJournal& journal, std::string& error) const;
     bool install(const std::filesystem::path& source, StorageKind kind, std::string& contentId, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const;
     bool install(const std::filesystem::path& source, std::string& contentId, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const { return install(source, StorageKind::Regular, contentId, std::move(progress), error); }

@@ -38,6 +38,19 @@ struct HomeModel {
     bool networkReady{};
 };
 
+struct TransferRowModel {
+    std::string id;
+    std::string title;
+    std::string detail;
+    TaskState state{TaskState::Queued};
+};
+
+struct TransfersModel {
+    std::vector<TransferRowModel> entries;
+    bool busy{};
+    bool cancellable{};
+};
+
 struct FileRowModel {
     std::string id;
     std::string title;
@@ -69,11 +82,8 @@ struct LibraryRowModel {
     std::string detail;
     bool available{};
     bool installable{};
-    bool installed{};
-    bool managed{};
     bool canInstall{};
     bool canRemovePackage{};
-    bool canUninstall{};
 };
 
 struct LibraryModel {
@@ -90,6 +100,7 @@ struct SettingsModel {
 };
 
 HomeModel makeHomeModel(const State& state, bool appletMode, bool networkReady);
+TransfersModel makeTransfersModel(const State& state, const OperationSnapshot& operation);
 LibraryModel makeLibraryModel(const State& state, bool appletMode);
 SettingsModel makeSettingsModel(const State& state);
 

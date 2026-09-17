@@ -52,6 +52,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("Storage error", "Erro de armazenamento", "Error de almacenamiento") \
  X("Resuming download", "Retomando download", "Reanudando descarga") \
  X("Transfers", "Transferências", "Transferencias") \
+ X("No active transfers.", "Nenhuma transferência ativa.", "No hay transferencias activas.") \
  X("Downloading %s", "Baixando %s", "Descargando %s") \
  X("Installation will start automatically after verification.", "A instalação iniciará automaticamente após a verificação.", "La instalación comenzará automáticamente después de la verificación.") \
  X("Download complete.", "Download concluído.", "Descarga completada.") \

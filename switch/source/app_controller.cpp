@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <fstream>
 #include <map>
 #include <thread>
@@ -19,6 +20,7 @@ namespace {
 
 constexpr uint64_t kCheckpointBytes = 64ULL * 1024ULL * 1024ULL;
 constexpr auto kCheckpointInterval = std::chrono::seconds(10);
+constexpr auto kTransferUiInterval = std::chrono::milliseconds(100);
 
 std::string formatted(i18n::TextId id, const std::string& value) {
     char text[768]{};
@@ -207,7 +209,11 @@ struct AppController::Impl {
             return false;
         }
         workers.emplace_back([this, generation, work = std::move(work)]() mutable {
-            work(generation);
+            try {
+                work(generation);
+            } catch (const std::exception& exception) {
+                operation.finish(generation, ui::OperationPhase::Failed, exception.what());
+            }
             notify();
         });
         return true;
@@ -267,10 +273,19 @@ struct AppController::Impl {
         saveLocked(error);
     }
 
+    void finishInstalledTask(const Task& task, const std::string& libraryId, std::string& error) {
+        std::scoped_lock lock(stateMutex);
+        const auto taskFound = std::find_if(state.tasks.begin(), state.tasks.end(), [&](const Task& value) { return value.id == task.id; });
+        if (taskFound == state.tasks.end()) state.tasks.push_back(task); else *taskFound = task;
+        std::erase_if(state.library, [&](const LibraryItem& value) { return value.id == libraryId; });
+        saveLocked(error);
+    }
+
     bool installDownloaded(Task& task, LibraryItem& item, NspInstallStorage destination,
         uint64_t generation, std::string& error) {
         operation.setPhase(generation, ui::OperationPhase::Installing,
             i18n::tr(i18n::TextId::InstallNsp), false);
+        notify();
         task.state = TaskState::Installing;
         upsertTaskAndLibrary(task, item, error);
         bool installed{};
@@ -278,10 +293,6 @@ struct AppController::Impl {
             const auto base = sanitizeFileName(task.displayName.substr(0, task.displayName.size() - 4));
             const fs::path location = std::string("sdmc:/switch/") + base + "/" + sanitizeFileName(task.displayName);
             installed = NroInstaller{}.install(task.localPath, location, false, error);
-            if (installed) {
-                item.installed = InstallKind::Nro;
-                item.installedPath = location.string();
-            }
         } else if (isInstallablePackage(task.displayName)) {
             NspInstaller installer;
             NspPackageInfo package;
@@ -307,16 +318,7 @@ struct AppController::Impl {
                         return operation.shouldContinue(generation);
                     }, error);
             }
-            if (installed) {
-                item.installed = InstallKind::Nsp;
-                item.installedContentId = package.metaId;
-                item.nspContentKind = package.kind;
-                item.nspStorage = destination;
-                item.nspMetaId = package.metaId;
-                item.nspBaseTitleId = package.baseTitleId;
-                item.nspVersion = package.version;
-                item.nspInstallState = NspInstallState::Installed;
-            } else {
+            if (!installed) {
                 item.nspInstallState = NspInstallState::Failed;
             }
         } else {
@@ -326,9 +328,9 @@ struct AppController::Impl {
         task.error = installed ? "" : error;
         if (installed && task.deleteAfterInstall && LocalFile::remove(task.localPath, task.storageKind, error)) {
             task.localState = LocalState::RemovedAfterInstall;
-            item.localState = LocalState::RemovedAfterInstall;
         }
-        upsertTaskAndLibrary(task, item, error);
+        if (installed) finishInstalledTask(task, item.id, error);
+        else upsertTaskAndLibrary(task, item, error);
         return installed;
     }
 
@@ -402,13 +404,26 @@ void AppController::recover() {
     bool exists{};
     if (impl_->store.loadInstallJournal(journal, error, exists) && exists) {
         const auto recovered = journal;
-        if (NspInstaller{}.recover(impl_->store, journal, error)) {
+        bool installCommitted{};
+        if (NspInstaller{}.recover(impl_->store, journal, installCommitted, error)) {
             std::scoped_lock lock(impl_->stateMutex);
             const auto item = std::find_if(impl_->state.library.begin(), impl_->state.library.end(), [&](const LibraryItem& value) {
                 return value.id == recovered.libraryId;
             });
-            if (item != impl_->state.library.end() && recovered.operation == "install")
-                item->nspInstallState = recovered.phase == "committed" ? NspInstallState::Installed : NspInstallState::Failed;
+            if (item != impl_->state.library.end() && recovered.operation == "install") {
+                if (installCommitted) {
+                    const auto task = std::find_if(impl_->state.tasks.begin(), impl_->state.tasks.end(), [&](const Task& value) {
+                        return value.id == recovered.libraryId;
+                    });
+                    if (task != impl_->state.tasks.end()) {
+                        task->state = TaskState::Completed;
+                        task->error.clear();
+                    }
+                    impl_->state.library.erase(item);
+                } else {
+                    item->nspInstallState = NspInstallState::Failed;
+                }
+            }
             impl_->saveLocked(error);
         }
     }
@@ -444,6 +459,10 @@ void AppController::unsubscribe(size_t id) {
 
 ui::HomeModel AppController::homeSnapshot() const {
     return ui::makeHomeModel(impl_->stateCopy(), impl_->applet, impl_->networkReady);
+}
+
+ui::TransfersModel AppController::transfersSnapshot() const {
+    return ui::makeTransfersModel(impl_->stateCopy(), impl_->operation.snapshot());
 }
 
 ui::FilesModel AppController::filesSnapshot() const {
@@ -705,6 +724,7 @@ void AppController::download(size_t index, bool installAfter, NspInstallStorage 
                 ? GoogleStorageProvider(impl_->http(generation), token).downloadRequest(remote)
                 : HomeStorageProvider(impl_->http(generation), *provider).downloadRequest(remote);
             TransferMeter meter(task.committedBytes);
+            auto lastProgressAt = std::chrono::steady_clock::time_point{};
             uint64_t lastCheckpoint = task.committedBytes;
             auto lastCheckpointAt = std::chrono::steady_clock::now();
             DownloadResult result;
@@ -713,9 +733,12 @@ void AppController::download(size_t index, bool installAfter, NspInstallStorage 
                 [&](const std::string& etag) { task.etag = etag; impl_->upsertTask(task, error); return error.empty(); },
                 [&](uint64_t received) {
                     const auto now = std::chrono::steady_clock::now();
-                    const auto estimate = meter.sample(received, task.expectedSize, now);
-                    impl_->operation.update(generation, received, task.expectedSize, estimate.bytesPerSecond, estimate.etaSeconds);
-                    impl_->notify();
+                    if (received == task.expectedSize || now - lastProgressAt >= kTransferUiInterval) {
+                        const auto estimate = meter.sample(received, task.expectedSize, now);
+                        impl_->operation.update(generation, received, task.expectedSize, estimate.bytesPerSecond, estimate.etaSeconds);
+                        impl_->notify();
+                        lastProgressAt = now;
+                    }
                     if (received - lastCheckpoint >= kCheckpointBytes && now - lastCheckpointAt >= kCheckpointInterval) {
                         if (!output.flush(error) || !output.size(task.committedBytes, error)) return false;
                         impl_->upsertTask(task, error);
@@ -925,28 +948,6 @@ void AppController::removeLibraryPackage(size_t index) {
     std::string error;
     { std::scoped_lock lock(impl_->stateMutex); if (index >= impl_->state.library.size()) return; impl_->store.removeDownload(impl_->state, impl_->state.library[index].id, error); }
     impl_->notify();
-}
-
-void AppController::uninstallLibraryItem(size_t index) {
-    if (impl_->applet) return;
-    const auto state = impl_->stateCopy();
-    if (index >= state.library.size()) return;
-    auto item = state.library[index];
-    if (item.installed != InstallKind::Nsp || item.nspInstallState != NspInstallState::Installed || item.nspMetaId.empty()) return;
-    impl_->launch(ui::OperationPhase::Removing, i18n::TextId::RemoveNsp, i18n::TextId::Ellipsis, false,
-        [this, item](uint64_t generation) mutable {
-            InstalledNspInfo target{true, item.nspStorage, item.nspVersion, item.nspMetaId, item.nspBaseTitleId, item.nspContentKind};
-            NspInstallJournal journal;
-            std::string error;
-            const bool ok = NspInstaller{}.uninstall(target, impl_->store, journal, error);
-            if (ok) {
-                std::scoped_lock lock(impl_->stateMutex);
-                const auto found = std::find_if(impl_->state.library.begin(), impl_->state.library.end(), [&](const LibraryItem& value) { return value.id == item.id; });
-                if (found != impl_->state.library.end()) { found->installed = InstallKind::None; found->nspInstallState = NspInstallState::None; found->installedContentId.clear(); }
-                impl_->saveLocked(error);
-            }
-            impl_->finish(generation, ok ? ui::OperationPhase::Completed : ui::OperationPhase::Failed, ok ? "" : error);
-        });
 }
 
 void AppController::cancelOperation() { impl_->operation.requestCancel(); impl_->notify(); }

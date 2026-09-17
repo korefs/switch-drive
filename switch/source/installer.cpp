@@ -26,7 +26,7 @@ bool copyLogicalFile(const fs::path& source, StorageKind sourceKind, const fs::p
     if (!input.size(size, error)) return false;
     LocalFile output;
     if (!output.create(destination, StorageKind::Regular, error)) return false;
-    std::array<unsigned char, 256 * 1024> buffer{};
+    std::vector<unsigned char> buffer(256 * 1024);
     for (uint64_t offset = 0; offset < size;) {
         const size_t chunk = static_cast<size_t>(std::min<uint64_t>(buffer.size(), size - offset));
         if (!input.readAt(offset, buffer.data(), chunk, error) || !output.writeAt(offset, buffer.data(), chunk, error)) return false;
@@ -377,7 +377,7 @@ bool NspInstaller::inspect(const fs::path& source, StorageKind kind, NspPackageI
     FsFile output{};
     rc = fsFsOpenFile(&temporaryFs, temporary.c_str(), FsOpenMode_Write, &output);
     if (R_FAILED(rc)) { cleanupTemporary(); error = resultError(i18n::TextId::CnmtPrepareFailed, rc); return false; }
-    std::array<uint8_t, 256 * 1024> buffer{};
+    std::vector<uint8_t> buffer(256 * 1024);
     bool copied = true;
     for (uint64_t offset = 0; offset < meta->size;) {
         const size_t amount = static_cast<size_t>(std::min<uint64_t>(buffer.size(), meta->size - offset));
@@ -485,7 +485,7 @@ bool NspInstaller::install(const fs::path& source, StorageKind kind, const NspPa
     appletLockExit();
     {
         uint64_t total = 0, written = 0; for (const auto& item : all) total += item.size;
-        std::array<uint8_t, 256 * 1024> buffer{};
+        std::vector<uint8_t> buffer(256 * 1024);
         for (size_t index = 0; index < all.size(); ++index) {
             const auto& item = all[index]; auto& itemJournal = journal.contents[index]; if (!itemJournal.created) { written += item.size; continue; }
             uint8_t rawId[16]{}, rawPlaceholder[16]{}; hexToBytes(item.id, rawId, sizeof(rawId)); hexToBytes(itemJournal.placeholderId, rawPlaceholder, sizeof(rawPlaceholder));
@@ -541,7 +541,8 @@ fail:
 #endif
 }
 
-bool NspInstaller::recover(StateStore& store, NspInstallJournal& journal, std::string& error) const {
+bool NspInstaller::recover(StateStore& store, NspInstallJournal& journal, bool& installCommitted, std::string& error) const {
+    installCommitted = false;
 #ifndef __SWITCH__
     (void)store; (void)journal; error = i18n::tr(i18n::TextId::RecoverySwitchOnly); return false;
 #else
@@ -572,6 +573,7 @@ bool NspInstaller::recover(StateStore& store, NspInstallJournal& journal, std::s
         if (!refreshApplicationRecord(journal.package, key, storage, error)) return false;
     }
     if (!store.clearInstallJournal(error)) return false;
+    installCommitted = journal.operation == "install" && committed;
     journal = {}; return true;
 #endif
 }

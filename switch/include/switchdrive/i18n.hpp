@@ -19,7 +19,7 @@ enum class TextId {
     PartialIdentityMissing, PartialTooLarge, DownloadAlreadyExists,
     ChecksumMismatch, InstallFailed, InstalledCleanupPending,
     RestartDownload, CannotDeletePartial, InvalidPartial, InsufficientSpace,
-    FreeSpaceAndRetry, StorageError, ResumingDownload, Transfers, Downloading,
+    FreeSpaceAndRetry, StorageError, ResumingDownload, Transfers, NoActiveTransfers, Downloading,
     InstallAfterDownloadQueued,
     DownloadComplete, DownloadInvalid, Paused, RangeRejected,
     InterruptedDownload, SelectToResume, CompleteAwaitingVerification,

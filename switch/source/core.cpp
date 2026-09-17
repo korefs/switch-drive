@@ -729,7 +729,10 @@ State StateStore::load() {
             // v2 never recorded enough identity to safely remove installed NSPs.
             item.nspInstallState = NspInstallState::Unverified;
         }
-        if (!item.id.empty()) state.library.push_back(std::move(item));
+        const bool installed = item.installed != InstallKind::None ||
+            item.nspInstallState == NspInstallState::Installed ||
+            item.nspInstallState == NspInstallState::Unverified;
+        if (!item.id.empty() && !installed) state.library.push_back(std::move(item));
     }
     if (schemaVersion >= 2) {
         for (const auto& row : objectRows(json, "tasks")) {
@@ -956,8 +959,7 @@ bool StateStore::removeDownload(State& state, const std::string& libraryId, std:
         if (!LocalFile::remove(item->localPath, item->storageKind, error)) return false;
     }
     std::erase_if(state.tasks, [&](const Task& task) { return task.id == id; });
-    if (item->installed == InstallKind::None && (item->nspInstallState == NspInstallState::None || item->nspInstallState == NspInstallState::Failed)) state.library.erase(item);
-    else item->localState = LocalState::Missing; // Retain installation ownership and metadata.
+    state.library.erase(item);
     return save(state, error);
 }
 

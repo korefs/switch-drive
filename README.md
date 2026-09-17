@@ -45,10 +45,10 @@ to the microSD card, and optionally install supported packages from the console.
   FAT32 per-file limit while preserving one logical filename on the Switch.
 - Standalone NRO installation and transactional NSP/NSZ installation for one
   base game, update, or DLC per package.
-- Downgrade protection, selectable SD/internal installation storage,
-  interrupted-install recovery, and managed component removal that preserves
-  save data.
-- Local download library with optional package cleanup after installation.
+- Downgrade protection, selectable SD/internal installation storage, and
+  interrupted-install recovery.
+- Local library for downloaded packages that have not yet been installed, with
+  optional package cleanup after installation.
 - Controller and touch navigation in English (US), Portuguese (Brazil), and
   Spanish.
 - Borealis-based interface with the classic Switch sidebar, native focus and
@@ -224,8 +224,7 @@ console state, logs, OAuth credentials, or tunnel tokens.
 | **B** | Go back; pause/cancel an active network operation |
 | **X** in Files | Choose the storage provider |
 | **Y** in Files | Choose **My Drive** or **Shared with me** |
-| **X** in Library | Confirm uninstall of a managed NSP component |
-| **Y** in Library | Delete the package or offer managed uninstall |
+| **Y** in Library | Delete the downloaded package |
 | **L/R** | Change the main section |
 | **ZL** in Files | Hide an entry when catalog management is allowed |
 | **+** | Exit |
@@ -333,8 +332,8 @@ docker build --target test -t switch-drive-home-storage-tests .
 - NSP/NSZ mutations are journaled before NCM changes. On the next launch, the
   app checks live metadata and either completes or rolls back recovery.
 - Existing content remains registered until replacement metadata commits.
-- Managed removal deletes only the selected base, update, or DLC component
-  after orphan checks. Switch Drive never calls save-data deletion APIs.
+- The Library never removes installed titles or save data; it only deletes
+  downloaded package files.
 - Package cleanup happens only after a confirmed installation.
 - Home Storage mounts the host library read-only. Hiding an entry changes only
   its SQLite catalog and never deletes the host file.

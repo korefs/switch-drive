@@ -251,14 +251,7 @@ void testDownloadRemoval(const fs::path& root) {
             assert(!LocalFile::exists(task.localPath, kind));
             const State loaded = store.load();
             assert(loaded.tasks.size() == 1 && loaded.tasks[0].id == "unrelated");
-            assert(loaded.library.size() == (installed ? 1U : 0U));
-            if (installed) {
-                assert(loaded.library[0].localState == LocalState::Missing);
-                assert(loaded.library[0].installed == InstallKind::Nsp);
-                assert(loaded.library[0].nspInstallState == NspInstallState::Installed);
-                assert(loaded.library[0].nspMetaId == item.nspMetaId && loaded.library[0].nspVersion == 42);
-                assert(loaded.library[0].installedContentId == "content");
-            }
+            assert(loaded.library.empty());
             // Already missing files can still have their stale download records removed.
             state.library = {item};
             state.library[0].installed = InstallKind::None;
@@ -358,6 +351,8 @@ int main() {
     screenState.lastAccountId = "account";
     screenState.deleteAfterInstall = false;
     screenState.tasks.push_back({});
+    screenState.tasks.back().id = "paused-transfer";
+    screenState.tasks.back().displayName = "Paused.nsp";
     screenState.tasks.back().state = TaskState::Paused;
     LibraryItem screenItem;
     screenItem.id = "library-item";
@@ -369,9 +364,13 @@ int main() {
     const auto homeModel = ui::makeHomeModel(screenState, true, false);
     assert(homeModel.account == "player@example.com" && homeModel.activeTasks == 1 &&
         homeModel.libraryItems == 1 && homeModel.appletMode && !homeModel.networkReady);
+    const auto transfersModel = ui::makeTransfersModel(screenState, {});
+    assert(transfersModel.entries.size() == 1 && transfersModel.entries[0].id == "paused-transfer" &&
+        transfersModel.entries[0].title == "Paused.nsp" && transfersModel.entries[0].detail == tr(TextId::Paused) &&
+        !transfersModel.busy && !transfersModel.cancellable);
     const auto libraryModel = ui::makeLibraryModel(screenState, true);
     assert(libraryModel.entries.size() == 1 && !libraryModel.entries[0].available &&
-        !libraryModel.entries[0].canInstall && !libraryModel.entries[0].canUninstall);
+        !libraryModel.entries[0].canInstall && !libraryModel.entries[0].canRemovePackage);
     const auto settingsModel = ui::makeSettingsModel(screenState);
     assert(settingsModel.account == "player@example.com" && settingsModel.languageCode == "en-US" &&
         !settingsModel.deleteAfterInstall);
@@ -381,6 +380,13 @@ int main() {
     assert(gate.update(generation, 25, 100, 50, 2));
     auto operation = gate.snapshot();
     assert(operation.busy && operation.current == 25 && operation.total == 100 && operation.etaSeconds == 2);
+    screenState.tasks.back().state = TaskState::Downloading;
+    operation.title = tr(TextId::Transfers);
+    const auto activeTransfers = ui::makeTransfersModel(screenState, operation);
+    assert(activeTransfers.busy && activeTransfers.cancellable && activeTransfers.entries.size() == 1 &&
+        activeTransfers.entries[0].detail.find("25.0%") != std::string::npos);
+    operation.title = tr(TextId::Files);
+    assert(!ui::makeTransfersModel(screenState, operation).busy);
     assert(gate.requestCancel() && !gate.shouldContinue(generation));
     assert(!gate.update(generation + 1, 50, 100));
     assert(gate.finish(generation, ui::OperationPhase::Paused, "paused"));
@@ -395,6 +401,7 @@ int main() {
                 TextId::ControllerMissing, TextId::InputUnfocused,
                 TextId::AppVersion, TextId::ButtonL, TextId::ButtonR,
                 TextId::Download, TextId::DownloadAndInstall, TextId::Back,
+                TextId::NoActiveTransfers,
                 TextId::RestartRequired, TextId::ExitConfirm,
                 TextId::ExitActiveConfirm}) assert(std::strlen(tr(id)) > 0);
     }
@@ -537,6 +544,14 @@ int main() {
         const std::string contents((std::istreambuf_iterator<char>(backup)), {});
         assert(contents.find("updated-token") != std::string::npos && contents.find("latest-token") == std::string::npos);
     }
+    loaded.library[0].installed = InstallKind::Nsp;
+    loaded.library[0].nspInstallState = NspInstallState::Installed;
+    assert(store.save(loaded, error));
+    assert(store.load().library.empty());
+    loaded.library[0].installed = InstallKind::None;
+    loaded.library[0].nspInstallState = NspInstallState::Installing;
+    assert(store.save(loaded, error));
+    assert(store.load().library.size() == 1);
     for (const char* language : {"en-US", "pt-BR", "es-ES"}) {
         State languageState;
         languageState.language = language;
