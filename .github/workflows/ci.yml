@@ -102,3 +102,61 @@ jobs:
           name: switch-drive-nro
           path: switch-drive.nro
           if-no-files-found: error
+
+  switch-client-release:
+    name: Publish Switch client release
+    needs: switch-client
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check for a new client version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(sed -nE 's/^[[:space:]]*project\(switch_drive[[:space:]]+VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+).*$/\1/p' CMakeLists.txt)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unable to read a semantic client version from CMakeLists.txt" >&2
+            exit 1
+          fi
+
+          latest_version="$(git tag --list | sed -nE '/^[0-9]+\.[0-9]+\.[0-9]+$/p' | sort -V | tail -n 1)"
+          publish=false
+          if [[ -z "$latest_version" ]]; then
+            publish=true
+          elif [[ "$version" == "$latest_version" ]]; then
+            echo "Version $version is already tagged; no release is needed."
+          elif [[ "$(printf '%s\n' "$latest_version" "$version" | sort -V | tail -n 1)" == "$version" ]]; then
+            publish=true
+          else
+            echo "Version $version is not newer than the current version $latest_version; no release will be created."
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+      - name: Download built NRO
+        if: steps.version.outputs.publish == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: switch-drive-nro
+          path: release
+      - name: Create tag and latest release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mv release/switch-drive.nro "release/switch-drive-${VERSION}.nro"
+          gh release create "$VERSION" \
+            "release/switch-drive-${VERSION}.nro#Switch Drive ${VERSION} (NRO)" \
+            --target "$GITHUB_SHA" \
+            --title "Switch Drive ${VERSION}" \
+            --generate-notes \
+            --latest
