@@ -92,7 +92,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .header-cta { min-height: 42px; padding-inline: 16px; font-size: 14px; }
 
 .section { position: relative; border-bottom: 1px solid var(--line); }
-.section::before { content: ""; position: absolute; top: 0; bottom: 0; left: max(var(--gutter), calc((100vw - var(--max)) / 2 + var(--gutter))); width: 2px; background: var(--red); opacity: .82; }
+/* .section::before { content: ""; position: absolute; top: 0; bottom: 0; left: max(var(--gutter), calc((100vw - var(--max)) / 2 + var(--gutter))); width: 2px; background: var(--red); opacity: .82; } */
 .section-inner { padding: clamp(64px, 9vw, 116px) 0 clamp(64px, 9vw, 116px) 50px; }
 .section-index { font: 700 12px/1 var(--mono); color: var(--red); letter-spacing: .1em; margin-bottom: 24px; }
 .hero-grid { display: grid; grid-template-columns: 1.04fr .96fr; gap: clamp(44px, 7vw, 94px); align-items: center; min-height: 670px; }
