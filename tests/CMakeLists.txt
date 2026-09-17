@@ -16,6 +16,11 @@ target_link_libraries(switch_drive_tests PRIVATE ${ZSTD_LIBRARY} ${MBEDCRYPTO_LI
 enable_testing()
 add_test(NAME switch_drive_tests COMMAND switch_drive_tests)
 
+add_executable(switch_drive_download_tests download_tests.cpp ../switch/source/core.cpp ../switch/source/download.cpp ../switch/source/network.cpp ../switch/source/i18n.cpp)
+target_include_directories(switch_drive_download_tests PRIVATE ../switch/include ${JANSSON_INCLUDE_DIR})
+target_link_libraries(switch_drive_download_tests PRIVATE CURL::libcurl ${JANSSON_LIBRARY} Threads::Threads)
+add_test(NAME switch_drive_download_tests COMMAND switch_drive_download_tests)
+
 option(SWITCHDRIVE_UI_PREVIEW "Build the host 1280x720 UI model preview" OFF)
 if(SWITCHDRIVE_UI_PREVIEW)
     add_executable(switch_drive_ui_preview ui_preview.cpp ../switch/source/core.cpp ../switch/source/i18n.cpp ../switch/source/ui_model.cpp)

@@ -76,6 +76,7 @@ enum class TextId {
     HomeBrowseHint, HideCatalogEntry, HideCatalogConfirm, ProviderConnected,
     ButtonZL, ButtonL, ButtonR, Download, DownloadAndInstall, Back,
     RestartRequired, ExitConfirm, ExitActiveConfirm,
+    NetworkProfileDiagnostic, DownloadPerformanceDiagnostic,
     Count
 };
 

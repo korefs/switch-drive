@@ -58,7 +58,7 @@ int main(int argc, char* argv[]) {
     FILE* bootLog = openBootLog();
     brls::Logger::setLogOutput(bootLog ? bootLog : stdout);
     brls::Logger::setThreadSafeLogging(true);
-    logBoot(bootLog, "0.2.6-borealis: main entered");
+    logBoot(bootLog, "0.2.7-borealis: main entered");
     if (bootLog)
         std::fprintf(bootLog, "environment: applet_type=%u\n", static_cast<unsigned>(appletGetAppletType()));
 

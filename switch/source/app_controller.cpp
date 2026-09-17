@@ -798,28 +798,37 @@ void AppController::download(size_t index, bool installAfter, NspInstallStorage 
             auto lastProgressAt = std::chrono::steady_clock::time_point{};
             uint64_t lastCheckpoint = task.committedBytes;
             auto lastCheckpointAt = std::chrono::steady_clock::now();
+            DownloadWriter writer(output, task.committedBytes);
             DownloadResult result;
-            const bool downloaded = task.committedBytes == task.expectedSize || impl_->http(generation).download(
-                request.url, request.headers, output, task.committedBytes, task.expectedSize, task.etag,
-                [&](const std::string& etag) { task.etag = etag; impl_->upsertTask(task, error); return error.empty(); },
-                [&](uint64_t received) {
-                    const auto now = std::chrono::steady_clock::now();
-                    if (received == task.expectedSize || now - lastProgressAt >= kTransferUiInterval) {
-                        const auto estimate = meter.sample(received, task.expectedSize, now);
-                        impl_->operation.update(generation, received, task.expectedSize, estimate.bytesPerSecond, estimate.etaSeconds);
-                        impl_->notify();
-                        lastProgressAt = now;
-                    }
-                    if (received - lastCheckpoint >= kCheckpointBytes && now - lastCheckpointAt >= kCheckpointInterval) {
-                        if (!output.flush(error) || !output.size(task.committedBytes, error)) return false;
-                        impl_->upsertTask(task, error);
-                        lastCheckpoint = task.committedBytes;
-                        lastCheckpointAt = now;
-                    }
-                    return impl_->operation.shouldContinue(generation);
-                }, result, error);
-            output.flush(error);
-            output.size(task.committedBytes, error);
+            bool downloaded{};
+            if (task.committedBytes == task.expectedSize) {
+                downloaded = writer.finish(result.bytesDurable, error);
+                result.status = downloaded ? DownloadStatus::AlreadyComplete : DownloadStatus::Failed;
+                result.bytesReceived = task.committedBytes;
+                result.bytesWritten = task.committedBytes;
+                result.writer = writer.stats();
+            } else {
+                downloaded = impl_->http(generation).download(
+                    request.url, request.headers, writer, task.committedBytes, task.expectedSize, task.etag,
+                    [&](const std::string& etag) { task.etag = etag; impl_->upsertTask(task, error); return error.empty(); },
+                    [&](uint64_t received) {
+                        const auto now = std::chrono::steady_clock::now();
+                        if (received == task.expectedSize || now - lastProgressAt >= kTransferUiInterval) {
+                            const auto estimate = meter.sample(received, task.expectedSize, now);
+                            impl_->operation.update(generation, received, task.expectedSize, estimate.bytesPerSecond, estimate.etaSeconds);
+                            impl_->notify();
+                            lastProgressAt = now;
+                        }
+                        if (received - lastCheckpoint >= kCheckpointBytes && now - lastCheckpointAt >= kCheckpointInterval) {
+                            if (!writer.checkpoint(task.committedBytes, error)) return false;
+                            impl_->upsertTask(task, error);
+                            lastCheckpoint = task.committedBytes;
+                            lastCheckpointAt = now;
+                        }
+                        return impl_->operation.shouldContinue(generation);
+                    }, result, error);
+            }
+            task.committedBytes = result.bytesDurable;
             output.close();
             if (!downloaded) {
                 task.state = result.status == DownloadStatus::RangeRejected ? TaskState::Failed : TaskState::Paused;

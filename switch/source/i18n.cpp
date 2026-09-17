@@ -215,7 +215,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("Controller ready", "Controle conectado", "Control conectado") \
  X("Connect a controller", "Conecte um controle", "Conecta un control") \
  X("Waiting for input focus", "Aguardando foco de controle", "Esperando el foco de control") \
- X("Version 0.2.6", "Versão 0.2.6", "Versión 0.2.6") \
+ X("Version 0.2.7", "Versão 0.2.7", "Versión 0.2.7") \
  X("Preparing download…", "Preparando download…", "Preparando descarga…") \
  X("Loading files…", "Carregando arquivos…", "Cargando archivos…") \
  X("Verifying downloaded file…", "Verificando arquivo baixado…", "Verificando archivo descargado…") \
@@ -248,7 +248,9 @@ using Catalog = std::array<const char*, textCount()>;
  X("Back", "Voltar", "Volver") \
  X("Language changes will be applied on the next launch.", "A mudança de idioma será aplicada na próxima inicialização.", "El cambio de idioma se aplicará en el próximo inicio.") \
  X("Close Switch Drive?", "Fechar o Switch Drive?", "¿Cerrar Switch Drive?") \
- X("A transfer or installation is active. Cancel it and close Switch Drive?", "Há uma transferência ou instalação ativa. Cancelar e fechar o Switch Drive?", "Hay una transferencia o instalación activa. ¿Cancelarla y cerrar Switch Drive?")
+ X("A transfer or installation is active. Cancel it and close Switch Drive?", "Há uma transferência ou instalação ativa. Cancelar e fechar o Switch Drive?", "Hay una transferencia o instalación activa. ¿Cancelarla y cerrar Switch Drive?") \
+ X("network: applet=%d rx=%u/%u socket=%08x fallback=%d", "network: applet=%d rx=%u/%u socket=%08x fallback=%d", "network: applet=%d rx=%u/%u socket=%08x fallback=%d") \
+ X("download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d", "download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d", "download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d")
 
 #define EN(en, pt, es) en,
 constexpr const char* kEnglishKeys[] = { SD_TEXTS(EN) SD_HOME_TEXTS(EN) };

@@ -26,6 +26,9 @@ Switch Drive is a Nintendo Switch homebrew app for accessing Google Drive and
 self-hosted Home Storage providers. Browse remote folders, save files directly
 to the microSD card, and optionally install supported packages from the console.
 
+> [!WARNING]
+> Currently under active development. Core features are stable and functional, though you may still encounter minor bugs or UX issues while the project moves toward its first fully validated end-to-end release.
+
 > [!IMPORTANT]
 > NSP and NSZ operations require an Atmosphère console running Switch Drive in
 > application mode. Only install packages you trust and are authorized to use.

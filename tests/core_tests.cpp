@@ -431,6 +431,8 @@ int main() {
     assert(std::string(nspContentKindName(NspContentKind::Update)) == "Actualización");
     assert(std::string(nspInstallStorageName(NspInstallStorage::InternalUser)) == "Memoria interna");
     setLanguage(Language::EnUs);
+    assert(std::string(tr(TextId::NetworkProfileDiagnostic)).find("network: applet=") == 0);
+    assert(std::string(tr(TextId::DownloadPerformanceDiagnostic)).find("download: applet=") == 0);
     assert(formatDataSize(0) == "0 B");
     assert(formatDataSize(1536) == "1.5 KiB");
     assert(formatDataSize(3 * 1024 * 1024 + 512 * 1024) == "3.5 MiB");
