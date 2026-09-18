@@ -134,6 +134,7 @@ SettingsModel makeSettingsModel(const State& state) {
     model.account = accountName(state);
     model.language = std::string(i18n::languageName(i18n::parseLanguage(state.language)));
     model.languageCode = std::string(i18n::languageCode(i18n::parseLanguage(state.language)));
+    model.pairingServiceUrl = state.serviceUrl.empty() ? kDefaultPairingServiceUrl : state.serviceUrl;
     const auto home = std::find_if(state.providers.begin(), state.providers.end(), [](const ProviderConfig& provider) {
         return provider.kind == ProviderKind::HomeStorage;
     });

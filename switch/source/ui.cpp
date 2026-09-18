@@ -199,7 +199,7 @@ size_t focusedRow() {
 
 void pushOperation(AppController& controller);
 void pushTransfers(AppController& controller);
-void pushPairing(AppController& controller);
+void pushPairing(AppController& controller, std::function<void(int)> navigate);
 void pushHomeStorage(AppController& controller);
 std::atomic<bool> operationViewOpen{};
 
@@ -300,26 +300,39 @@ void pushTransfers(AppController& controller) {
 
 class PairingView final : public ObservedBox {
   public:
-    explicit PairingView(AppController& appController) : ObservedBox(appController) {
-        setPadding(28, 56, 28, 56);
+    PairingView(AppController& appController, std::function<void(int)> navigateAction)
+        : ObservedBox(appController), navigate(std::move(navigateAction)) {
+        setPadding(16, 56, 16, 56);
         setAlignItems(brls::AlignItems::CENTER);
-        subtitle = label(i18n::tr(i18n::TextId::ScanWithPhone), 24, 48);
+        subtitle = label(i18n::tr(i18n::TextId::ScanWithPhone), 24, 42);
         subtitle->setHorizontalAlign(brls::HorizontalAlign::CENTER);
         qrView = new QrView();
-        qrView->setWidth(360);
-        qrView->setHeight(360);
-        url = label("", 20, 50);
+        qrView->setWidth(280);
+        qrView->setHeight(280);
+        url = label("", 20, 38);
         url->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-        code = label("", 28, 58);
+        code = label("", 28, 42);
         code->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-        error = label("", 18, 48);
+        error = label("", 18, 34);
         error->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+        check = new brls::Button();
+        check->setStyle(&brls::BUTTONSTYLE_PRIMARY);
+        check->setText(i18n::tr(i18n::TextId::CheckNow));
+        check->setWidth(360);
+        check->setHeight(54);
+        check->setMarginTop(8);
+        check->registerAction(i18n::tr(i18n::TextId::CheckNow), brls::BUTTON_A, [this](brls::View*) {
+            const auto model = controller.pairingSnapshot();
+            if (!model.ready || model.connected || controller.operationSnapshot().busy) return false;
+            controller.checkPairing();
+            return true;
+        }, false, false, brls::SOUND_CLICK);
         addView(subtitle);
         addView(qrView);
         addView(url);
         addView(code);
         addView(error);
-        registerAction(i18n::tr(i18n::TextId::CheckNow), brls::BUTTON_A, [this](brls::View*) { controller.checkPairing(); pushOperation(controller); return true; }, false, false, brls::SOUND_CLICK);
+        addView(check);
         registerAction(i18n::tr(i18n::TextId::Cancel), brls::BUTTON_B, [this](brls::View*) { controller.cancelPairing(); brls::Application::popActivity(); return true; }, false, false, brls::SOUND_BACK);
         refresh();
     }
@@ -330,6 +343,10 @@ class PairingView final : public ObservedBox {
         url->setText(model.url);
         code->setText(model.code.empty() ? "" : std::string(i18n::tr(i18n::TextId::Code)) + ": " + model.code);
         error->setText(model.error);
+        const bool canCheck = model.ready && !model.connected && !controller.operationSnapshot().busy;
+        check->setState(canCheck ? brls::ButtonState::ENABLED : brls::ButtonState::DISABLED);
+        check->setActionAvailable(brls::BUTTON_A, canCheck);
+        if (model.connected && !confirmationShown) showConfirmation();
     }
 
   private:
@@ -338,11 +355,29 @@ class PairingView final : public ObservedBox {
     brls::Label* url{};
     brls::Label* code{};
     brls::Label* error{};
+    brls::Button* check{};
+    std::function<void(int)> navigate;
+    bool confirmationShown{};
+
+    void showConfirmation() {
+        confirmationShown = true;
+        auto* dialog = new brls::Dialog(i18n::tr(i18n::TextId::ConnectionConfirmed));
+        dialog->setCancelable(false);
+        auto* appController = &controller;
+        const auto navigateTo = navigate;
+        dialog->addButton(i18n::tr(i18n::TextId::GoToFiles), [appController, navigateTo] {
+            brls::Application::popActivity(brls::TransitionAnimation::FADE, [appController, navigateTo] {
+                appController->refreshFiles();
+                if (navigateTo) navigateTo(1);
+            });
+        });
+        dialog->open();
+    }
 };
 
-void pushPairing(AppController& controller) {
-    pushFramed(i18n::tr(i18n::TextId::ConnectDrive), new PairingView(controller));
+void pushPairing(AppController& controller, std::function<void(int)> navigate) {
     controller.beginPairing();
+    pushFramed(i18n::tr(i18n::TextId::ConnectDrive), new PairingView(controller, std::move(navigate)));
 }
 
 class HomeStorageView final : public ObservedBox {
@@ -411,7 +446,7 @@ class HomeView final : public ObservedBox {
         recycler->setGrow(1);
         recycler->registerCell("detail", [] { return new brls::DetailCell(); });
         recycler->setDataSource(new ModelDataSource([this] { return rows(); }, [this](size_t index) {
-            if (index == 0) pushPairing(controller);
+            if (index == 0) pushPairing(controller, navigate);
             else if (index == 1) navigate(1);
             else if (index == 2) pushTransfers(controller);
             else if (index == 3) navigate(2);
@@ -649,11 +684,25 @@ class LibraryView final : public ObservedBox {
 
 class SettingsView final : public ObservedBox {
   public:
-    explicit SettingsView(AppController& appController) : ObservedBox(appController) {
+    SettingsView(AppController& appController, std::function<void(int)> navigateAction)
+        : ObservedBox(appController), navigate(std::move(navigateAction)) {
         setPadding(24, 48, 24, 48);
         account = new brls::DetailCell();
         account->setText(i18n::tr(i18n::TextId::ConnectDrive));
-        account->registerClickAction([this](brls::View*) { pushPairing(controller); return true; });
+        account->registerClickAction([this](brls::View*) {
+            const auto model = controller.settingsSnapshot();
+            if (model.account == i18n::tr(i18n::TextId::NoAccountConnected)) pushPairing(controller, navigate);
+            else {
+                auto* dialog = new brls::Dialog(model.account);
+                dialog->addButton(i18n::tr(i18n::TextId::ConnectDrive), [this] { pushPairing(controller, navigate); });
+                dialog->addButton(i18n::tr(i18n::TextId::DisconnectAccount), [this] {
+                    confirm(i18n::tr(i18n::TextId::DisconnectAccountConfirm), [this] { controller.disconnectAccount(); pushOperation(controller); });
+                });
+                dialog->addButton(i18n::tr(i18n::TextId::Cancel), [] {});
+                dialog->open();
+            }
+            return true;
+        });
         language = new brls::SelectorCell();
         const auto current = i18n::parseLanguage(controller.settingsSnapshot().languageCode);
         language->init(i18n::tr(i18n::TextId::Language), {
@@ -664,11 +713,23 @@ class SettingsView final : public ObservedBox {
             controller.setLanguage(static_cast<i18n::Language>(selected));
             brls::Application::notify(i18n::tr(i18n::TextId::RestartRequired));
         });
+        pairingApi = new brls::DetailCell();
+        pairingApi->setText(i18n::tr(i18n::TextId::PairingServiceApi));
+        pairingApi->registerClickAction([this](brls::View*) {
+            const auto current = controller.settingsSnapshot().pairingServiceUrl;
+            brls::Application::getImeManager()->openForText([this](std::string address) {
+                std::string error;
+                if (!controller.setPairingServiceUrl(address, error) && !error.empty())
+                    brls::Application::notify(error);
+            }, i18n::tr(i18n::TextId::PairingServiceApi), "", 512, current);
+            return true;
+        });
         homeStorage = new brls::DetailCell();
         homeStorage->setText(i18n::tr(i18n::TextId::HomeStorage));
         homeStorage->registerClickAction([this](brls::View*) { pushHomeStorage(controller); return true; });
         addView(account);
         addView(language);
+        addView(pairingApi);
         addView(homeStorage);
         addView(new brls::Padding());
         refresh();
@@ -677,13 +738,16 @@ class SettingsView final : public ObservedBox {
     void refresh() override {
         const auto model = controller.settingsSnapshot();
         account->setDetailText(model.account);
+        pairingApi->setDetailText(model.pairingServiceUrl);
         homeStorage->setDetailText(model.homeStorage);
     }
 
   private:
     brls::DetailCell* account{};
     brls::SelectorCell* language{};
+    brls::DetailCell* pairingApi{};
     brls::DetailCell* homeStorage{};
+    std::function<void(int)> navigate;
 };
 
 class MainActivity final : public brls::Activity {
@@ -696,7 +760,7 @@ class MainActivity final : public brls::Activity {
         tabs->addTab(i18n::tr(i18n::TextId::Home), [this, navigate] { current = 0; setFilesHints(false); return new HomeView(controller, navigate); });
         tabs->addTab(i18n::tr(i18n::TextId::Files), [this] { current = 1; setFilesHints(true); return new FilesView(controller); });
         tabs->addTab(i18n::tr(i18n::TextId::Library), [this] { current = 2; setFilesHints(false); return new LibraryView(controller); });
-        tabs->addTab(i18n::tr(i18n::TextId::Settings), [this] { current = 3; setFilesHints(false); return new SettingsView(controller); });
+        tabs->addTab(i18n::tr(i18n::TextId::Settings), [this, navigate] { current = 3; setFilesHints(false); return new SettingsView(controller, navigate); });
         frame = new brls::AppletFrame(tabs);
         frame->setTitle(i18n::tr(i18n::TextId::AppName));
         footerHints = findHints(frame->getFooter());

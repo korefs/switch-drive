@@ -50,6 +50,12 @@ async function pairSecret(request: FastifyRequest, id: string) {
   return result.rows[0] as {status: string; expires_at: Date; console_key_hash: string; account_id: string | null};
 }
 
+async function accountPayload(id: string) {
+  const account = await db.query<{id: string; email: string; display_name: string | null}>(`SELECT id, email, display_name FROM accounts WHERE id=$1`, [id]);
+  if (account.rowCount !== 1) throw app.httpErrors.notFound('Conta não encontrada');
+  return {id: account.rows[0].id, email: account.rows[0].email, displayName: account.rows[0].display_name};
+}
+
 app.register(cookie, {secret: required('COOKIE_SECRET')});
 app.register(formbody);
 app.register(sensible);
@@ -117,11 +123,20 @@ app.get('/oauth/google/callback', async (request, reply) => {
   const ticket = await oauth.verifyIdToken({idToken: tokens.id_token, audience: required('GOOGLE_CLIENT_ID')});
   const profile = ticket.getPayload();
   if (!profile?.sub || !profile.email || profile.email_verified !== true) throw app.httpErrors.unauthorized('Conta Google inválida');
-  const accountLookup = await db.query<{id: string}>(`SELECT id FROM accounts WHERE google_sub=$1`, [profile.sub]);
-  const accountId = accountLookup.rows[0]?.id ?? randomUUID();
-  await db.query(`INSERT INTO accounts (id, google_sub, email, display_name, refresh_token_ciphertext) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (google_sub) DO UPDATE SET email=EXCLUDED.email, display_name=EXCLUDED.display_name, refresh_token_ciphertext=EXCLUDED.refresh_token_ciphertext, updated_at=now()`, [accountId, profile.sub, profile.email, profile.name ?? null, encrypt(tokens.refresh_token)]);
-  await db.query(`INSERT INTO console_accounts (console_key_hash, account_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [pairing.rows[0].console_key_hash, accountId]);
-  await db.query(`UPDATE pairings SET status='approved', account_id=$2 WHERE id=$1`, [id, accountId]);
+  const client = await db.connect();
+  let accountId = '';
+  try {
+    await client.query('BEGIN');
+    const accountLookup = await client.query<{id: string}>(`SELECT id FROM accounts WHERE google_sub=$1 OR (google_sub IS NULL AND email=$2) ORDER BY CASE WHEN google_sub=$1 THEN 0 ELSE 1 END LIMIT 1 FOR UPDATE`, [profile.sub, profile.email]);
+    accountId = accountLookup.rows[0]?.id ?? randomUUID();
+    if (accountLookup.rowCount) await client.query(`UPDATE accounts SET google_sub=$2, drive_permission_id=NULL, email=$3, display_name=$4, refresh_token_ciphertext=$5, updated_at=now() WHERE id=$1`, [accountId, profile.sub, profile.email, profile.name ?? null, encrypt(tokens.refresh_token)]);
+    else await client.query(`INSERT INTO accounts (id, google_sub, drive_permission_id, email, display_name, refresh_token_ciphertext) VALUES ($1,$2,NULL,$3,$4,$5)`, [accountId, profile.sub, profile.email, profile.name ?? null, encrypt(tokens.refresh_token)]);
+    await client.query(`DELETE FROM account_drive_items WHERE account_id=$1`, [accountId]);
+    await client.query(`INSERT INTO console_accounts (console_key_hash, account_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [pairing.rows[0].console_key_hash, accountId]);
+    await client.query(`UPDATE pairings SET status='approved', account_id=$2 WHERE id=$1`, [id, accountId]);
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
   return reply.type('text/html').send('<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Switch Drive</title><h1>Conta conectada</h1><p>Volte ao Switch para concluir.</p>');
 });
 
@@ -130,8 +145,7 @@ app.get('/v1/pairings/:id', async (request, reply) => {
   const pairing = await pairSecret(request, id);
   if (pairing.expires_at < new Date()) return reply.code(410).send({status: 'expired'});
   if (pairing.status !== 'approved') return {status: pairing.status};
-  const account = await db.query(`SELECT email, display_name FROM accounts WHERE id=$1`, [pairing.account_id]);
-  return {status: 'approved', account: {id: pairing.account_id, email: account.rows[0].email, displayName: account.rows[0].display_name}};
+  return {status: 'approved', account: await accountPayload(pairing.account_id!)};
 });
 
 app.post('/v1/pairings/:id/claim', async (request, reply) => {
@@ -143,14 +157,13 @@ app.post('/v1/pairings/:id/claim', async (request, reply) => {
   await db.query(`INSERT INTO console_sessions (token_hash, console_key_hash, expires_at) VALUES ($1,$2,now() + interval '180 days')`, [hash(token), pairing.console_key_hash]);
   const updated = await db.query(`UPDATE pairings SET status='claimed' WHERE id=$1 AND status='approved' RETURNING id`, [id]);
   if (updated.rowCount !== 1) throw app.httpErrors.conflict('Pareamento já utilizado');
-  const account = await db.query(`SELECT id, email, display_name FROM accounts WHERE id=$1`, [pairing.account_id]);
-  return {sessionToken: token, account: {id: account.rows[0].id, email: account.rows[0].email, displayName: account.rows[0].display_name}};
+  return {sessionToken: token, account: await accountPayload(pairing.account_id)};
 });
 
 app.get('/v1/accounts', async request => {
   const session = await requireSession(request);
-  const result = await db.query(`SELECT a.id, a.email, a.display_name FROM accounts a JOIN console_accounts ca ON ca.account_id=a.id WHERE ca.console_key_hash=$1 ORDER BY a.email`, [session.consoleKeyHash]);
-  return {accounts: result.rows.map(row => ({id: row.id, email: row.email, displayName: row.display_name}))};
+  const result = await db.query<{id: string}>(`SELECT a.id FROM accounts a JOIN console_accounts ca ON ca.account_id=a.id WHERE ca.console_key_hash=$1 ORDER BY a.email`, [session.consoleKeyHash]);
+  return {accounts: await Promise.all(result.rows.map(row => accountPayload(row.id)))};
 });
 
 app.post('/v1/accounts/:id/access-token', async request => {
@@ -167,8 +180,15 @@ app.post('/v1/accounts/:id/access-token', async request => {
 app.delete('/v1/accounts/:id', async (request, reply) => {
   const session = await requireSession(request);
   const id = (request.params as {id: string}).id;
+  const token = await db.query<{refresh_token_ciphertext: string}>(`SELECT a.refresh_token_ciphertext FROM accounts a JOIN console_accounts ca ON ca.account_id=a.id WHERE ca.console_key_hash=$1 AND a.id=$2`, [session.consoleKeyHash, id]);
   const result = await db.query(`DELETE FROM console_accounts WHERE console_key_hash=$1 AND account_id=$2`, [session.consoleKeyHash, id]);
   if (result.rowCount !== 1) throw app.httpErrors.notFound('Conta não encontrada');
+  const links = await db.query(`SELECT 1 FROM console_accounts WHERE account_id=$1 LIMIT 1`, [id]);
+  if (!links.rowCount && token.rowCount) {
+    const refreshToken = decrypt(token.rows[0].refresh_token_ciphertext);
+    await db.query(`DELETE FROM accounts WHERE id=$1`, [id]);
+    await fetch('https://oauth2.googleapis.com/revoke', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: new URLSearchParams({token: refreshToken})}).catch(() => undefined);
+  }
   return reply.code(204).send();
 });
 

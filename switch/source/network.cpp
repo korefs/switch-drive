@@ -647,6 +647,7 @@ bool AuthClient::poll(const std::string& id, const std::string& pollSecret, Acco
         return false;
     }
     json_t* data = json_object_get(root, "account");
+    account = {};
     account.id = str(data, "id"); account.email = str(data, "email"); account.displayName = str(data, "displayName");
     json_decref(root);
     return !account.id.empty();
@@ -659,6 +660,7 @@ bool AuthClient::claim(const std::string& id, const std::string& pollSecret, std
     if (!root) return false;
     session = str(root, "sessionToken");
     json_t* data = json_object_get(root, "account");
+    account = {};
     account.id = str(data, "id"); account.email = str(data, "email"); account.displayName = str(data, "displayName");
     json_decref(root);
     return !session.empty() && !account.id.empty();
@@ -670,8 +672,12 @@ bool AuthClient::accounts(const std::string& session, std::vector<Account>& acco
     json_t* root = parse(response.body, error);
     if (!root) return false;
     json_t* rows = json_object_get(root, "accounts");
+    accounts.clear();
     size_t index; json_t* row;
-    json_array_foreach(rows, index, row) accounts.push_back({str(row, "id"), str(row, "email"), str(row, "displayName")});
+    json_array_foreach(rows, index, row) {
+        Account account{str(row, "id"), str(row, "email"), str(row, "displayName")};
+        accounts.push_back(std::move(account));
+    }
     json_decref(root);
     return true;
 }
@@ -688,6 +694,11 @@ bool AuthClient::accessToken(const std::string& session, const std::string& acco
         return false;
     }
     return true;
+}
+
+bool AuthClient::disconnect(const std::string& session, const std::string& accountId, std::string& error) const {
+    HttpClient::Response response;
+    return http_.del(serviceUrl_ + "/v1/accounts/" + accountId, {"Authorization: Bearer " + session}, response, error);
 }
 
 bool DriveClient::list(const std::string& accessToken, const std::string& folderId, bool sharedWithMe, const std::string& pageToken, std::vector<RemoteEntry>& files, std::string& nextPage, std::string& error) const {
@@ -772,7 +783,11 @@ bool HomeStorageClient::list(const ProviderConfig& provider, const std::string& 
 bool HomeStorageClient::hide(const ProviderConfig& provider, const std::string& id, std::string& error) const { HttpClient::Response response; return http_.del(provider.baseUrl + "/api/v1/catalog/" + id,{"Authorization: Bearer " + provider.accessToken},response,error); }
 std::string HomeStorageClient::mediaUrl(const ProviderConfig& provider, const RemoteEntry& file) const { return provider.baseUrl + "/api/v1/files/" + file.id + "/content"; }
 
-bool GoogleStorageProvider::list(const std::string& folder, bool shared, const std::string& cursor, std::vector<RemoteEntry>& files, std::string& next, std::string& error) const { const size_t begin=files.size();if(!drive_.list(token_,folder,shared,cursor,files,next,error))return false;for(size_t i=begin;i<files.size();++i)files[i].providerId="google-drive";return true; }
+bool GoogleStorageProvider::list(const std::string& folder, bool shared, const std::string& cursor, std::vector<RemoteEntry>& files, std::string& next, std::string& error) const {
+    const size_t begin=files.size();if(!drive_.list(token_,folder,shared,cursor,files,next,error))return false;
+    for(size_t i=begin;i<files.size();++i)files[i].providerId="google-drive";
+    return true;
+}
 DownloadRequest GoogleStorageProvider::downloadRequest(const RemoteEntry& file) const { return {drive_.mediaUrl(file),token_.empty()?std::vector<std::string>{}:std::vector<std::string>{"Authorization: Bearer "+token_}}; }
 bool HomeStorageProvider::list(const std::string& folder, bool, const std::string& cursor, std::vector<RemoteEntry>& files, std::string& next, std::string& error) const { return home_.list(config_,folder,cursor,files,next,error); }
 DownloadRequest HomeStorageProvider::downloadRequest(const RemoteEntry& file) const { return {home_.mediaUrl(config_,file),config_.accessToken.empty()?std::vector<std::string>{}:std::vector<std::string>{"Authorization: Bearer "+config_.accessToken}}; }

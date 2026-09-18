@@ -95,6 +95,7 @@ struct SettingsModel {
     std::string account;
     std::string language;
     std::string languageCode;
+    std::string pairingServiceUrl;
     std::string homeStorage;
 };
 

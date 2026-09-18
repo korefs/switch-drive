@@ -144,6 +144,8 @@ struct AppController::Impl {
     std::string folder{"root"};
     std::vector<std::string> parentFolders;
     std::vector<std::string> parentNames;
+    std::vector<bool> parentShared;
+    bool sharedRoot{};
 
     mutable std::mutex pairingMutex;
     PairingModel pairing;
@@ -169,9 +171,12 @@ struct AppController::Impl {
             if (start != std::string::npos) {
                 const auto begin = start + marker.size();
                 const auto end = config.find('"', begin);
-                if (end != std::string::npos) state.serviceUrl = config.substr(begin, end - begin);
+                std::string configured;
+                if (end != std::string::npos && normalizePairingServiceUrl(config.substr(begin, end - begin), configured))
+                    state.serviceUrl = std::move(configured);
             }
         }
+        if (state.serviceUrl.empty()) state.serviceUrl = kDefaultPairingServiceUrl;
         const auto provider = std::find_if(state.providers.begin(), state.providers.end(), [&](const ProviderConfig& value) {
             return value.id == state.activeProviderId;
         });
@@ -255,14 +260,16 @@ struct AppController::Impl {
     }
 
     void persistFolder() {
-        bool shared{};
-        { std::scoped_lock lock(filesMutex); shared = files.shared; }
+        {
+            std::scoped_lock lock(filesMutex);
+            if (files.shared) return;
+        }
         std::string error;
         std::scoped_lock lock(stateMutex);
         const auto provider = std::find_if(state.providers.begin(), state.providers.end(), [&](const ProviderConfig& value) {
             return value.id == state.activeProviderId;
         });
-        if (provider == state.providers.end() || (provider->kind == ProviderKind::GoogleDrive && shared)) return;
+        if (provider == state.providers.end()) return;
         provider->lastFolderId = folder.empty() ? "root" : folder;
         saveLocked(error);
     }
@@ -274,9 +281,10 @@ struct AppController::Impl {
             return value.id == state.activeProviderId;
         });
         files.providerId = state.activeProviderId;
-        files.providerName = provider == state.providers.end() || provider->kind == ProviderKind::GoogleDrive
-            ? i18n::tr(i18n::TextId::MyDrive) : provider->name;
-        files.canChangeScope = provider == state.providers.end() || provider->kind == ProviderKind::GoogleDrive;
+        files.canChangeScope = provider != state.providers.end() && provider->kind == ProviderKind::GoogleDrive;
+        files.providerName = provider == state.providers.end() || provider->kind != ProviderKind::GoogleDrive
+            ? (provider == state.providers.end() ? i18n::tr(i18n::TextId::MyDrive) : provider->name)
+            : i18n::tr(files.shared ? i18n::TextId::SharedWithMe : i18n::TextId::MyDrive);
         files.location = parentNames.empty() ? files.providerName : parentNames.back();
         files.breadcrumb = parentNames;
     }
@@ -582,9 +590,11 @@ void AppController::selectProvider(const std::string& id) {
     }
     impl_->parentFolders.clear();
     impl_->parentNames.clear();
+    impl_->parentShared.clear();
     {
         std::scoped_lock lock(impl_->filesMutex);
         impl_->files.shared = false;
+        impl_->sharedRoot = false;
     }
     impl_->setFilesHeader();
     refreshFiles();
@@ -592,23 +602,21 @@ void AppController::selectProvider(const std::string& id) {
 
 void AppController::setSharedWithMe(bool shared) {
     if (impl_->operation.snapshot().busy) return;
-    {
-        std::scoped_lock lock(impl_->filesMutex);
-        if (!impl_->files.canChangeScope || impl_->files.shared == shared) return;
-        impl_->files.shared = shared;
-    }
-    if (shared) {
-        impl_->folder = "root";
-    } else {
-        const auto state = impl_->stateCopy();
-        const auto provider = std::find_if(state.providers.begin(), state.providers.end(), [&](const ProviderConfig& value) {
-            return value.id == state.activeProviderId;
-        });
-        impl_->folder = provider == state.providers.end() || provider->lastFolderId.empty()
-            ? "root" : provider->lastFolderId;
-    }
+    const auto state = impl_->stateCopy();
+    const auto provider = std::find_if(state.providers.begin(), state.providers.end(), [&](const ProviderConfig& value) {
+        return value.id == state.activeProviderId;
+    });
+    if (provider == state.providers.end() || provider->kind != ProviderKind::GoogleDrive) return;
+    impl_->folder = shared ? "root" : (provider->lastFolderId.empty() ? "root" : provider->lastFolderId);
     impl_->parentFolders.clear();
     impl_->parentNames.clear();
+    impl_->parentShared.clear();
+    {
+        std::scoped_lock lock(impl_->filesMutex);
+        impl_->files.shared = shared;
+        impl_->sharedRoot = shared;
+    }
+    impl_->setFilesHeader();
     refreshFiles();
 }
 
@@ -646,14 +654,17 @@ void AppController::refreshFiles() {
             std::vector<RemoteEntry> entries;
             std::string cursor, error;
             bool ok{};
+            bool shared{};
+            {
+                std::scoped_lock lock(impl_->filesMutex);
+                shared = impl_->sharedRoot;
+            }
             if (providerIt->kind == ProviderKind::GoogleDrive) {
                 if (state.lastAccountId.empty()) error = i18n::tr(i18n::TextId::ConnectAccountFirst);
                 else {
                     std::string token;
                     AuthClient auth(impl_->http(generation), state.serviceUrl);
                     if (auth.accessToken(state.sessionToken, state.lastAccountId, token, error)) {
-                        bool shared{};
-                        { std::scoped_lock lock(impl_->filesMutex); shared = impl_->files.shared; }
                         ok = GoogleStorageProvider(impl_->http(generation), token).list(impl_->folder, shared, "", entries, cursor, error);
                     }
                 }
@@ -677,17 +688,17 @@ void AppController::refreshFiles() {
 
 void AppController::loadNextFilesPage() {
     std::string cursor;
-    { std::scoped_lock lock(impl_->filesMutex); cursor = impl_->files.cursor; }
+    bool shared{};
+    { std::scoped_lock lock(impl_->filesMutex); cursor = impl_->files.cursor; shared = impl_->sharedRoot; }
     if (cursor.empty() || impl_->operation.snapshot().busy) return;
     impl_->launch(ui::OperationPhase::Preparing, i18n::TextId::Files, i18n::TextId::Ellipsis, true,
-        [this, cursor](uint64_t generation) {
+        [this, cursor, shared](uint64_t generation) {
             const auto state = impl_->stateCopy();
             const auto provider = std::find_if(state.providers.begin(), state.providers.end(), [&](const ProviderConfig& value) { return value.id == state.activeProviderId; });
             std::vector<RemoteEntry> page;
             std::string next, error, token;
             bool ok{};
-            bool shared{};
-            { std::scoped_lock lock(impl_->filesMutex); shared = impl_->files.shared; impl_->files.loading = true; }
+            { std::scoped_lock lock(impl_->filesMutex); impl_->files.loading = true; }
             if (provider != state.providers.end() && provider->kind == ProviderKind::GoogleDrive &&
                 AuthClient(impl_->http(generation), state.serviceUrl).accessToken(state.sessionToken, state.lastAccountId, token, error))
                 ok = GoogleStorageProvider(impl_->http(generation), token).list(impl_->folder, shared, cursor, page, next, error);
@@ -709,13 +720,17 @@ void AppController::loadNextFilesPage() {
 
 void AppController::openFolder(size_t index) {
     RemoteEntry entry;
+    bool shared{};
     {
         std::scoped_lock lock(impl_->filesMutex);
         if (index >= impl_->remoteFiles.size() || !impl_->remoteFiles[index].folder) return;
         entry = impl_->remoteFiles[index];
+        shared = impl_->sharedRoot;
+        impl_->sharedRoot = false;
     }
     impl_->parentFolders.push_back(impl_->folder);
     impl_->parentNames.push_back(entry.name);
+    impl_->parentShared.push_back(shared);
     impl_->folder = entry.id;
     impl_->persistFolder();
     impl_->setFilesHeader();
@@ -727,6 +742,11 @@ void AppController::backFolder() {
     impl_->folder = impl_->parentFolders.back();
     impl_->parentFolders.pop_back();
     if (!impl_->parentNames.empty()) impl_->parentNames.pop_back();
+    {
+        std::scoped_lock lock(impl_->filesMutex);
+        impl_->sharedRoot = !impl_->parentShared.empty() && impl_->parentShared.back();
+    }
+    if (!impl_->parentShared.empty()) impl_->parentShared.pop_back();
     impl_->persistFolder();
     impl_->setFilesHeader();
     refreshFiles();
@@ -947,10 +967,27 @@ void AppController::checkPairing() {
                 if (found == impl_->state.accounts.end()) impl_->state.accounts.push_back(account); else *found = account;
                 impl_->state.lastAccountId = account.id;
                 impl_->state.sessionToken = session;
+                const auto provider = std::find_if(impl_->state.providers.begin(), impl_->state.providers.end(), [](const ProviderConfig& value) { return value.kind == ProviderKind::GoogleDrive; });
+                if (provider != impl_->state.providers.end()) {
+                    provider->lastFolderId = "root";
+                    impl_->state.activeProviderId = provider->id;
+                }
+                impl_->folder = "root"; impl_->parentFolders.clear(); impl_->parentNames.clear(); impl_->parentShared.clear();
                 impl_->saveLocked(error);
             } else {
                 std::scoped_lock lock(impl_->pairingMutex);
                 impl_->pairing.error = error;
+            }
+            if (ok) {
+                {
+                    std::scoped_lock lock(impl_->filesMutex);
+                    impl_->files.shared = false;
+                    impl_->sharedRoot = false;
+                }
+                impl_->setFilesHeader();
+                std::scoped_lock lock(impl_->pairingMutex);
+                impl_->pairing.error.clear();
+                impl_->pairing.connected = true;
             }
             impl_->finish(generation, ok ? ui::OperationPhase::Completed : ui::OperationPhase::Failed,
                 ok ? formatted(i18n::TextId::Connected, account.email) : error);
@@ -963,11 +1000,67 @@ void AppController::cancelPairing() {
     impl_->pairing = {};
 }
 
+void AppController::disconnectAccount() {
+    if (impl_->operation.snapshot().busy) return;
+    const auto state = impl_->stateCopy();
+    if (state.lastAccountId.empty() || state.sessionToken.empty()) return;
+    impl_->launch(ui::OperationPhase::Pairing, i18n::TextId::DisconnectAccount, i18n::TextId::DisconnectingAccount, false,
+        [this, state](uint64_t generation) {
+            std::string error;
+            const bool ok = AuthClient(impl_->http(generation), state.serviceUrl).disconnect(state.sessionToken, state.lastAccountId, error);
+            if (ok) {
+                std::scoped_lock lock(impl_->stateMutex);
+                impl_->state.accounts.erase(std::remove_if(impl_->state.accounts.begin(), impl_->state.accounts.end(), [&](const Account& account) { return account.id == state.lastAccountId; }), impl_->state.accounts.end());
+                impl_->state.lastAccountId.clear(); impl_->state.sessionToken.clear();
+                const auto provider = std::find_if(impl_->state.providers.begin(), impl_->state.providers.end(), [](const ProviderConfig& value) { return value.kind == ProviderKind::GoogleDrive; });
+                if (provider != impl_->state.providers.end()) provider->lastFolderId = "root";
+                impl_->folder = "root"; impl_->parentFolders.clear(); impl_->parentNames.clear(); impl_->parentShared.clear();
+                impl_->saveLocked(error);
+            }
+            if (ok) {
+                std::scoped_lock lock(impl_->filesMutex);
+                impl_->files.shared = false;
+                impl_->sharedRoot = false;
+            }
+            if (ok) impl_->setFilesHeader();
+            impl_->finish(generation, ok ? ui::OperationPhase::Completed : ui::OperationPhase::Failed,
+                ok ? i18n::tr(i18n::TextId::AccountDisconnected) : error);
+        });
+}
+
 void AppController::setLanguage(i18n::Language language) {
     if (impl_->operation.snapshot().busy) return;
     std::string error;
     { std::scoped_lock lock(impl_->stateMutex); impl_->state.language = i18n::languageCode(language); impl_->saveLocked(error); }
     impl_->notify();
+}
+
+bool AppController::setPairingServiceUrl(const std::string& address, std::string& error) {
+    error.clear();
+    if (impl_->operation.snapshot().busy) return false;
+    std::string normalized;
+    if (address.empty()) normalized = kDefaultPairingServiceUrl;
+    else if (!normalizePairingServiceUrl(address, normalized)) {
+        error = i18n::tr(i18n::TextId::InvalidPairingServiceUrl);
+        return false;
+    }
+    {
+        std::scoped_lock lock(impl_->stateMutex);
+        if (impl_->state.serviceUrl == normalized) return true;
+        impl_->state.serviceUrl = std::move(normalized);
+        impl_->state.sessionToken.clear();
+        impl_->state.lastAccountId.clear();
+        impl_->state.accounts.clear();
+        if (!impl_->saveLocked(error)) return false;
+    }
+    {
+        std::scoped_lock lock(impl_->pairingMutex);
+        impl_->pairing = {};
+        impl_->pairingId.clear();
+        impl_->pairingSecret.clear();
+    }
+    impl_->notify();
+    return true;
 }
 
 void AppController::discoverHomeStorageServers() {

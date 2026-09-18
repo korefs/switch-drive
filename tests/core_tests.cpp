@@ -283,6 +283,26 @@ void waitForOperation(AppController& controller) {
 
 void testControllerWorkers(const fs::path& root) {
     {
+        AppController controller(root / "default-pairing-service", false);
+        assert(controller.settingsSnapshot().pairingServiceUrl == kDefaultPairingServiceUrl);
+        std::string error;
+        assert(controller.setPairingServiceUrl("pairing.example.com:8443", error));
+        assert(controller.settingsSnapshot().pairingServiceUrl == "https://pairing.example.com:8443");
+        assert(!controller.setPairingServiceUrl("http://pairing.example.com", error));
+        assert(error == tr(TextId::InvalidPairingServiceUrl));
+        assert(controller.setPairingServiceUrl("", error));
+        assert(controller.settingsSnapshot().pairingServiceUrl == kDefaultPairingServiceUrl);
+    }
+    {
+        const auto configuredRoot = root / "legacy-pairing-config";
+        fs::create_directories(configuredRoot);
+        std::ofstream config(configuredRoot / "config.json");
+        config << R"({"service_url":"https://self-hosted.example.com"})";
+        config.close();
+        AppController controller(configuredRoot, false);
+        assert(controller.settingsSnapshot().pairingServiceUrl == "https://self-hosted.example.com");
+    }
+    {
         AppController controller(root / "sequential", false);
         for (int attempt = 0; attempt < 12; ++attempt) {
             controller.beginPairing();
@@ -298,6 +318,10 @@ void testControllerWorkers(const fs::path& root) {
 
 int main() {
     std::string normalized;
+    assert(normalizePairingServiceUrl(" api.erok.qzz.io ", normalized) && normalized == kDefaultPairingServiceUrl);
+    assert(normalizePairingServiceUrl("https://pairing.example.com:8443", normalized) && normalized == "https://pairing.example.com:8443");
+    assert(!normalizePairingServiceUrl("http://pairing.example.com", normalized));
+    assert(!normalizePairingServiceUrl("https://pairing.example.com/api", normalized));
     assert(normalizeHomeStorageUrl("192.168.15.50:8080", normalized) && normalized == "http://192.168.15.50:8080");
     assert(normalizeHomeStorageUrl("storage.kore.qzz.io", normalized) && normalized == "https://storage.kore.qzz.io");
     assert(normalizeHomeStorageUrl("https://storage.example:8443", normalized) && normalized == "https://storage.example:8443");
@@ -381,7 +405,8 @@ int main() {
     assert(libraryModel.entries.size() == 1 && !libraryModel.entries[0].available &&
         !libraryModel.entries[0].canInstall && libraryModel.entries[0].canRemovePackage);
     const auto settingsModel = ui::makeSettingsModel(screenState);
-    assert(settingsModel.account == "player@example.com" && settingsModel.languageCode == "en-US");
+    assert(settingsModel.account == "player@example.com" && settingsModel.languageCode == "en-US" &&
+        settingsModel.pairingServiceUrl == kDefaultPairingServiceUrl);
     ui::OperationGate gate;
     const auto generation = gate.start(ui::OperationPhase::Downloading, "transfer", "starting", true);
     assert(generation != 0 && gate.start(ui::OperationPhase::Installing, "other", "", false) == 0);
@@ -410,6 +435,8 @@ int main() {
                 TextId::AppVersion, TextId::ButtonL, TextId::ButtonR,
                 TextId::Download, TextId::DownloadAndInstall, TextId::Back,
                 TextId::NoActiveTransfers,
+                TextId::CheckNow, TextId::ConnectionConfirmed, TextId::GoToFiles,
+                TextId::SharedWithMe,
                 TextId::RestartRequired, TextId::ExitConfirm,
                 TextId::ExitActiveConfirm}) assert(std::strlen(tr(id)) > 0);
     }
@@ -508,6 +535,8 @@ int main() {
     saved.sessionToken = "not-a-real-token";
     saved.language = "es-ES";
     saved.providers[0].lastFolderId = "saved-folder";
+    saved.accounts.push_back({"a1", "player@example.test", "Player"});
+    saved.lastAccountId = "a1";
     Task task;
     task.id = "task1";
     task.providerId = "google-drive";
@@ -543,17 +572,19 @@ int main() {
     saved.sessionToken = "latest-token";
     assert(store.save(saved, error));
     State loaded = store.load();
-    assert(loaded.schemaVersion == 6 && loaded.language == "es-ES" && loaded.sessionToken == "latest-token" && loaded.tasks.size() == 1 && loaded.library.size() == 1);
+    assert(loaded.schemaVersion == 8 && loaded.language == "es-ES" && loaded.sessionToken == "latest-token" && loaded.tasks.size() == 1 && loaded.library.size() == 1);
     assert(loaded.tasks[0].providerId == "google-drive" && loaded.tasks[0].committedBytes == task.committedBytes && loaded.tasks[0].storageKind == StorageKind::Concatenated);
     assert(loaded.tasks[0].revision == "42" && loaded.tasks[0].etag == "\"etag\"");
     assert(loaded.library[0].providerId == "google-drive" && loaded.library[0].md5 == task.md5);
+    assert(loaded.accounts.size() == 1 && loaded.accounts[0].email == "player@example.test");
     const auto homeProvider = std::find_if(loaded.providers.begin(), loaded.providers.end(), [](const ProviderConfig& p){ return p.id == "home-test"; });
     assert(loaded.providers.size() == 2 && loaded.providers[0].lastFolderId == "saved-folder" &&
         homeProvider != loaded.providers.end() && homeProvider->kind == ProviderKind::HomeStorage && homeProvider->canManageCatalog);
     {
         std::ifstream current(root / "state-v2" / "state.json");
         const std::string contents((std::istreambuf_iterator<char>(current)), {});
-        assert(contents.find("\"schemaVersion\":6") != std::string::npos);
+        assert(contents.find("\"schemaVersion\":8") != std::string::npos);
+        assert(contents.find("\"driveItems\"") == std::string::npos);
         for (const char* obsolete : {"\"deleteAfterInstall\"", "\"installKind\"", "\"installed\"",
                 "\"installedPath\"", "\"installedContentId\"", "\"nspInstallState\"",
                 "\"nspMetaId\"", "\"nspBaseTitleId\"", "\"nspVersion\""})
@@ -569,7 +600,7 @@ int main() {
         languageState.language = language;
         StateStore languageStore(root / (std::string("language-") + language));
         assert(languageStore.save(languageState, error));
-        assert(languageStore.load().schemaVersion == 6 && languageStore.load().language == language);
+        assert(languageStore.load().schemaVersion == 8 && languageStore.load().language == language);
     }
 
     // Existing schema v1 state keeps its catalog entries and adopts regular storage.
@@ -580,22 +611,22 @@ int main() {
         v1 << "{\"schemaVersion\":1,\"serviceUrl\":\"https://drive.test\",\"library\":[{\"id\":\"old\",\"accountId\":\"a\",\"remoteId\":\"r\",\"name\":\"old.nsp\",\"localPath\":\"/tmp/old.nsp\",\"md5\":\"x\"}]}";
     }
     State migrated = StateStore(v1Root).load();
-    assert(migrated.schemaVersion == 6 && migrated.activeProviderId == "google-drive" && migrated.providers.size() == 1 && migrated.providers[0].kind == ProviderKind::GoogleDrive && migrated.language == "en-US" && migrated.library.size() == 1 && migrated.library[0].providerId == "google-drive" && migrated.library[0].storageKind == StorageKind::Regular && migrated.tasks.empty());
+    assert(migrated.schemaVersion == 8 && migrated.activeProviderId == "google-drive" && migrated.providers.size() == 1 && migrated.providers[0].kind == ProviderKind::GoogleDrive && migrated.providers[0].lastFolderId == "root" && migrated.language == "en-US" && migrated.library.size() == 1 && migrated.library[0].providerId == "google-drive" && migrated.library[0].storageKind == StorageKind::Regular && migrated.tasks.empty());
 
     const auto v2Root = root / "state-v2-migration";
     fs::create_directories(v2Root);
     { std::ofstream v2(v2Root / "state.json"); v2 << "{\"schemaVersion\":2,\"tasks\":[]}"; }
-    assert(StateStore(v2Root).load().schemaVersion == 6 && StateStore(v2Root).load().language == "en-US");
+    assert(StateStore(v2Root).load().schemaVersion == 8 && StateStore(v2Root).load().language == "en-US");
 
     const auto v3Root = root / "state-v3";
     fs::create_directories(v3Root);
     { std::ofstream v3(v3Root / "state.json"); v3 << "{\"schemaVersion\":3}"; }
-    assert(StateStore(v3Root).load().schemaVersion == 6 && StateStore(v3Root).load().language == "en-US");
+    assert(StateStore(v3Root).load().schemaVersion == 8 && StateStore(v3Root).load().language == "en-US");
     const auto v4Root = root / "state-v4";
     fs::create_directories(v4Root);
     { std::ofstream v4(v4Root / "state.json"); v4 << "{\"schemaVersion\":4,\"sessionToken\":\"legacy-session\",\"accounts\":[{\"id\":\"a\",\"email\":\"old@example.test\"}],\"tasks\":[{\"id\":\"t\",\"accountId\":\"a\",\"remoteId\":\"remote\",\"displayName\":\"old.nsp\",\"expectedSize\":1}],\"library\":[{\"id\":\"l\",\"accountId\":\"a\",\"remoteId\":\"remote\",\"name\":\"old.nsp\",\"size\":1}]}"; }
     const State migratedV4 = StateStore(v4Root).load();
-    assert(migratedV4.schemaVersion == 6 && migratedV4.sessionToken == "legacy-session" && migratedV4.accounts.size() == 1 && migratedV4.tasks.size() == 1 && migratedV4.library.size() == 1);
+    assert(migratedV4.schemaVersion == 8 && migratedV4.sessionToken == "legacy-session" && migratedV4.accounts.size() == 1 && migratedV4.tasks.size() == 1 && migratedV4.library.size() == 1);
     assert(migratedV4.tasks[0].providerId == "google-drive" && migratedV4.library[0].providerId == "google-drive" && migratedV4.providers.size() == 1);
     const auto v5Root = root / "state-v5";
     fs::create_directories(v5Root);
@@ -609,12 +640,23 @@ int main() {
            << R"(","localState":"present","installed":"nsp","nspInstallState":"installed","nspMetaId":"0100000000001000","nspVersion":42},{"id":"deleted-package","providerId":"google-drive","name":"deleted.nsp","localPath":"/tmp/deleted.nsp","localState":"removedAfterInstall","installed":"nsp"}]})";
     }
     const State migratedV5 = StateStore(v5Root).load();
-    assert(migratedV5.schemaVersion == 6 && migratedV5.providers.size() == 1 &&
+    assert(migratedV5.schemaVersion == 8 && migratedV5.providers.size() == 1 &&
         migratedV5.providers[0].lastFolderId == "legacy-folder");
     assert(migratedV5.tasks.size() == 1 && migratedV5.tasks[0].installAfterDownload);
     assert(migratedV5.library.size() == 1 && migratedV5.library[0].id == "installed-package" &&
         migratedV5.library[0].localState == LocalState::Present &&
         LocalFile::exists(migratedV5.library[0].localPath, migratedV5.library[0].storageKind));
+    const auto v7Root = root / "state-v7";
+    fs::create_directories(v7Root);
+    {
+        std::ofstream v7(v7Root / "state.json");
+        v7 << R"({"schemaVersion":7,"serviceUrl":"https://custom.example","sessionToken":"drive-file-session","lastAccountId":"account-7","activeProviderId":"google-drive","language":"pt-BR","accounts":[{"id":"account-7","email":"old@example.test","displayName":"Old","driveItems":[{"id":"picked","name":"Games"}]}],"providers":[{"id":"google-drive","kind":"google-drive","lastFolderId":"selected"},{"id":"home","kind":"home-storage","name":"NAS","baseUrl":"https://nas.example","lastFolderId":"folder"}],"tasks":[{"id":"task-7","providerId":"google-drive","accountId":"account-7","remoteId":"remote","displayName":"game.nsz","expectedSize":10}],"library":[{"id":"library-7","providerId":"google-drive","accountId":"account-7","remoteId":"remote","name":"game.nsz","localPath":"/tmp/game.nsz","size":10,"localState":"present"}]})";
+    }
+    const State migratedV7 = StateStore(v7Root).load();
+    assert(migratedV7.schemaVersion == 8 && migratedV7.serviceUrl == "https://custom.example" && migratedV7.language == "pt-BR");
+    assert(migratedV7.sessionToken.empty() && migratedV7.lastAccountId.empty() && migratedV7.accounts.empty());
+    assert(migratedV7.providers.size() == 2 && migratedV7.providers[0].lastFolderId == "root" && migratedV7.providers[1].lastFolderId == "folder");
+    assert(migratedV7.tasks.size() == 1 && migratedV7.tasks[0].id == "task-7" && migratedV7.library.size() == 1 && migratedV7.library[0].id == "library-7");
     const auto invalidLanguageRoot = root / "state-invalid-language";
     fs::create_directories(invalidLanguageRoot);
     { std::ofstream invalid(invalidLanguageRoot / "state.json"); invalid << "{\"schemaVersion\":4,\"language\":\"es-es\"}"; }

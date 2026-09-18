@@ -27,6 +27,7 @@ struct PairingModel {
     std::string error;
     bool loading{};
     bool ready{};
+    bool connected{};
 };
 
 struct HomeStorageSetupModel {
@@ -73,8 +74,10 @@ class AppController {
     void beginPairing();
     void checkPairing();
     void cancelPairing();
+    void disconnectAccount();
 
     void setLanguage(i18n::Language language);
+    bool setPairingServiceUrl(const std::string& address, std::string& error);
     void discoverHomeStorageServers();
     void configureHomeStorage(const std::string& address, const std::string& username, const std::string& password);
 

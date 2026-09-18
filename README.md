@@ -35,8 +35,8 @@ to the microSD card, and optionally install supported packages from the console.
 
 ## Features
 
-- Phone-based Google OAuth pairing with a QR code or short URL and six-digit
-  code—no Google credentials are entered on the Switch.
+- Phone-based Google OAuth pairing with a QR code or short URL—no Google
+  credentials are entered on the Switch.
 - Self-hosted Home Storage providers with LAN discovery, manual addresses,
   optional authentication, and a read-only host library.
 - Direct downloads from the selected provider to
@@ -80,7 +80,7 @@ to the microSD card, and optionally install supported packages from the console.
 flowchart LR
     S[Nintendo Switch] -->|start and poll pairing| P[Pairing service]
     P -->|session and short-lived token| S
-    M[Phone browser] -->|Google OAuth approval| P
+    M[Phone browser] -->|OAuth consent| P
     P -->|encrypted refresh token| DB[(PostgreSQL)]
     P <-->|OAuth exchange| G[Google OAuth]
     S -->|browse and download directly| D[Google Drive API]
@@ -100,89 +100,48 @@ directly to the console; Home Storage does not depend on the pairing service.
   [Atmosphère](https://github.com/Atmosphere-NX/Atmosphere).
 - A FAT32 or exFAT microSD card. FAT32 is recommended for homebrew setups.
 - A built `switch-drive.nro`, or the devkitPro toolchain to create it.
-- For Google Drive: a public HTTPS hostname and a Google Cloud OAuth 2.0 web
-  client with the Drive API enabled.
 - For Home Storage: Docker on the computer that hosts the library.
 
-### 1. Configure Google OAuth
+### 1. Prepare the SD card
 
-1. Enable the Google Drive API in a Google Cloud project.
-2. Configure the OAuth consent screen. While the app is in testing mode, add
-   each user as a test user.
-3. Create an OAuth 2.0 **Web application** client.
-4. Register this exact redirect URI, replacing the hostname:
-
-   ```text
-   https://drive.example.com/oauth/google/callback
-   ```
-
-> [!NOTE]
-> External OAuth apps in testing mode are limited to approved test users, and
-> their refresh tokens expire after seven days. The requested `drive.readonly`
-> scope is restricted, so review Google's
-> [OAuth production requirements](https://developers.google.com/identity/protocols/oauth2/production-readiness/overview)
-> and [Drive scope guidance](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)
-> before distributing a public deployment.
-
-### 2. Deploy the pairing service
-
-The quickest local-server deployment uses Docker Compose with PostgreSQL and
-Caddy:
-
-```sh
-cp server/.env.example server/.env
-# Edit server/.env with the public hostname, OAuth client, and random secrets.
-docker compose --env-file server/.env up --build -d
-```
-
-Set `PUBLIC_ORIGIN` to the HTTPS origin used in Google Cloud and `PUBLIC_HOST`
-to the hostname only. Generate `TOKEN_ENCRYPTION_KEY` and `COOKIE_SECRET` as
-shown in `server/.env.example`, and choose a separate long random PostgreSQL
-password. Caddy obtains and renews the TLS certificate.
-
-Confirm the public endpoint before configuring the console:
-
-```sh
-curl https://drive.example.com/health
-```
-
-For the serverless alternative, follow the
-[Cloudflare Worker deployment guide](./worker/README.md).
-
-### 3. Prepare the SD card
-
-Copy the NRO and create the service configuration:
+Copy the NRO to the application folder:
 
 ```text
 sd:/
-├── switch/
-│   └── switch-drive/
-│       └── switch-drive.nro
-└── switch-drive/
-    └── config.json
+└── switch/
+    └── switch-drive/
+        └── switch-drive.nro
 ```
 
-`config.json` must contain the public HTTPS origin in this compact form:
-
-```json
-{"service_url":"https://drive.example.com"}
-```
+The app uses
+`https://api.erok.qzz.io` as its Google OAuth pairing API by default. The
+pairing API handles authorization and short-lived access tokens; Drive file
+contents are downloaded directly from Google to the console.
 
 Launch Switch Drive from Sphaira or hbmenu. Use a title override—hold **R**
 while opening a game—for NSP/NSZ installation and removal. Browsing and regular
 downloads remain available in applet mode, where the app displays a warning.
 
-### 4. Pair and download
+### 2. Pair and download
 
 1. Choose **Connect Drive**.
 2. Scan the QR code, or open the displayed URL and enter its six-digit code.
-3. Approve read-only Drive access, return to the Switch, and press **A** to
-   check the pairing.
-4. Open **Files**, select a file, then choose **Download** or **Download and
+3. Approve read-only Google Drive access, return to the Switch, and press
+   **A** to check the pairing.
+4. Open **Files**, browse **My Drive** or **Shared with me**, select a file,
+   then choose **Download** or **Download and
    install** from its action menu.
 
 Pairing requests expire after ten minutes. Connecting another account makes it
 the active account; a full account switcher is not implemented yet.
+
+Switch Drive requests `drive.readonly`, plus `openid`, `email`, and `profile`
+for account identity. This grants read-only access to all files the connected
+Google account can see; the app cannot create, edit, or delete Drive content.
+The Drive scope is classified as restricted by Google, so a public OAuth client
+requires Google's verification process, including the restricted-scope security
+assessment when applicable. Until the built-in service completes that process,
+use your own OAuth deployment as described below.
 
 ## Run Home Storage
 
@@ -226,7 +185,7 @@ console state, logs, OAuth credentials, or tunnel tokens.
 | **A** | Activate; open a folder; choose an action for a file; install a Library NSP/NSZ |
 | **B** | Go back; pause/cancel an active network operation |
 | **X** in Files | Choose the storage provider |
-| **Y** in Files | Choose **My Drive** or **Shared with me** |
+| **Y** in Files | Switch between My Drive and Shared with me |
 | **Y** in Library | Delete the downloaded package |
 | **L/R** | Change the main section |
 | **ZL** in Files | Hide an entry when catalog management is allowed |
@@ -239,12 +198,103 @@ always use the same locale.
 
 ## Self-host the pairing service
 
-The service requests only `drive.readonly` and identity scopes. It provides:
+You can replace the built-in pairing API with your own deployment. You need a
+public HTTPS origin, a Google Cloud OAuth 2.0 web client, and either the included
+Docker service or Cloudflare Worker.
+
+### 1. Configure Google OAuth
+
+> [!NOTE]
+> *Replace erok.qzz.io and swdrive.erok.qzz.io with your own domain.*
+
+1. Enable the Google Drive API in a Google Cloud project.
+2. Configure Google Auth Platform branding and audience. While the app remains
+   in **Testing**, every user must be listed as a test user. To remove that
+   restriction, select **External** and publish the app to **In production**.
+   `drive.readonly` is restricted: production use outside your test-user list
+   requires OAuth verification and the restricted-scope security assessment
+   when applicable. Publishing the consent screen alone does not bypass review.
+   For a personal deployment, keep the project in **Testing** and add only the
+   Google accounts that should use it. In a verification request, explain that
+   Switch Drive is a user-facing Drive browser/downloader: it must enumerate
+   arbitrary nested folders and shared items, while its code performs no Drive
+   create, update, or delete operations. A `drive.file` folder grant does not
+   reliably authorize the folder's existing descendants, so it cannot provide
+   that browsing behavior.
+3. Create an OAuth 2.0 **Web application** client.
+4. Register this exact redirect URI, replacing the hostname:
+
+   ```text
+   https://drive.example.com/oauth/google/callback
+   ```
+
+For the official deployment, use these separate public origins:
+
+| Google field | Value |
+| --- | --- |
+| Application home page | `https://swdrive.erok.qzz.io/` |
+| Privacy policy | `https://swdrive.erok.qzz.io/privacy/` |
+| Terms of service | `https://swdrive.erok.qzz.io/terms/` |
+| Authorized redirect URI | `https://api.erok.qzz.io/oauth/google/callback` |
+| Authorized domain | `erok.qzz.io` |
+
+Verify the root domain `erok.qzz.io` as a Search Console Domain property using
+the same Google account that owns or edits the Cloud project. The homepage does
+not have to live on the API origin: keeping the public site on `swdrive` and the
+OAuth callback/API on `api` is the recommended separation.
+
+The dependency-free public site is in [`site/`](./site/README.md). Create a
+Cloudflare Pages Git project with no build command, output directory `site`,
+then attach `swdrive.erok.qzz.io` as its custom domain.
+
+### 2. Deploy the service
+
+The quickest deployment uses Docker Compose with PostgreSQL and Caddy:
+
+```sh
+cp server/.env.example server/.env
+# Edit server/.env with the public hostname, OAuth client, and random secrets.
+docker compose --env-file server/.env up --build -d
+```
+
+Set `PUBLIC_ORIGIN` to the HTTPS origin used in Google Cloud and `PUBLIC_HOST`
+to the hostname only. Generate `TOKEN_ENCRYPTION_KEY` and `COOKIE_SECRET` as
+shown in `server/.env.example`, and choose a separate long random PostgreSQL
+password. Caddy obtains and renews the TLS certificate.
+
+Confirm the public endpoint:
+
+```sh
+curl https://drive.example.com/health
+```
+
+For the serverless alternative, follow the
+[Cloudflare Worker deployment guide](./worker/README.md).
+
+### 3. Select the custom API on the Switch
+
+Open **Settings → Google OAuth Pairing API** and enter the HTTPS origin, without
+a trailing API path, for example `https://drive.example.com`. Changing the API
+disconnects the current Google account, which must then be paired again against
+the new service. Leave the field empty to restore the built-in service.
+
+For compatibility with older releases, a fresh installation can instead use
+`sd:/switch-drive/config.json` with this exact compact content:
+
+```json
+{"service_url":"https://drive.example.com"}
+```
+
+The service requests `drive.readonly` and the OpenID identity scopes. It stores
+an encrypted refresh token but does not proxy or store Drive file content. It
+provides:
 
 - ten-minute, attempt-limited pairings with one-time claims;
 - 180-day console sessions stored as hashes;
 - AES-256-GCM encryption for Google refresh tokens at rest;
 - short-lived Drive access tokens for linked consoles;
+- account disconnection with stored authorization deletion and best-effort
+  Google token revocation;
 - per-route and global rate limiting; and
 - automatic PostgreSQL schema creation.
 
@@ -348,9 +398,8 @@ appropriate FS patches remain the operator's responsibility.
 
 ## Troubleshooting
 
-- **Configuration missing:** verify that
-  `sd:/switch-drive/config.json` uses the exact compact JSON shown above and an
-  HTTPS origin without an API path.
+- **Custom pairing API rejected:** enter its HTTPS origin without a path, query,
+  fragment, or credentials, for example `https://drive.example.com`.
 - **Install controls unavailable:** relaunch through a full title override by
   holding **R** while opening a game.
 - **Pairing stops working after several days:** reconnect the account and check

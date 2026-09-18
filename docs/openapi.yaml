@@ -3,7 +3,7 @@ info:
   title: Switch Drive Pairing API
   version: 1.0.0
 servers:
-  - url: https://drive.example.com
+  - url: https://api.erok.qzz.io
 paths:
   /health:
     get:
@@ -37,18 +37,19 @@ paths:
     get:
       security: [{PairingSecret: []}]
       responses:
-        '200': {description: Pairing status or approved account}
+        '200':
+          description: Pairing status or approved Google account
         '410': {description: Expired}
   /v1/pairings/{id}/claim:
     post:
       security: [{PairingSecret: []}]
       responses:
-        '200': {description: Console session and account}
+        '200': {description: Console session and approved Google account}
         '409': {description: Not approved or already consumed}
   /v1/accounts:
     get:
       security: [{ConsoleSession: []}]
-      responses: {'200': {description: Linked accounts}}
+      responses: {'200': {description: Linked Google accounts}}
   /v1/accounts/{id}/access-token:
     post:
       security: [{ConsoleSession: []}]
@@ -56,8 +57,16 @@ paths:
   /v1/accounts/{id}:
     delete:
       security: [{ConsoleSession: []}]
-      responses: {'204': {description: Account unlinked}}
+      responses: {'204': {description: Account unlinked; the final link also deletes stored authorization and attempts Google revocation}}
 components:
+  schemas:
+    Account:
+      type: object
+      required: [id, email, displayName]
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string, format: email}
+        displayName: {type: [string, 'null']}
   securitySchemes:
     PairingSecret: {type: apiKey, in: header, name: X-Pairing-Secret}
     ConsoleSession: {type: http, scheme: bearer}

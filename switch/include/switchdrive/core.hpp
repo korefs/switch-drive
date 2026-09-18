@@ -23,6 +23,7 @@ enum class NspInstallStorage { SdCard, InternalUser };
 enum class NspInstallDecision { Install, AlreadyInstalled, DowngradeBlocked, Unsupported };
 
 constexpr uint64_t kFat32FileLimit = 4ULL * 1024ULL * 1024ULL * 1024ULL;
+inline constexpr const char* kDefaultPairingServiceUrl = "https://api.erok.qzz.io";
 
 struct Account { std::string id, email, displayName; };
 struct Checksum { ChecksumKind kind{ChecksumKind::None}; std::string value; };
@@ -83,7 +84,7 @@ struct NspInstallJournal {
     bool ticketWasPresent{}, ticketImported{};
 };
 struct State {
-    int schemaVersion{6};
+    int schemaVersion{8};
     std::string serviceUrl, consolePublicKey, sessionToken, lastAccountId, activeProviderId{"google-drive"}, language{"en-US"};
     std::vector<Account> accounts;
     std::vector<ProviderConfig> providers{{"google-drive","","","","root",ProviderKind::GoogleDrive,false}};
@@ -97,6 +98,7 @@ bool isNro(const std::string& name);
 bool isNsp(const std::string& name);
 bool isNsz(const std::string& name);
 bool isInstallablePackage(const std::string& name);
+bool normalizePairingServiceUrl(const std::string& input, std::string& output);
 bool normalizeHomeStorageUrl(const std::string& input, std::string& output);
 std::string makeId();
 bool fileExists(const std::string& path);

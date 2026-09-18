@@ -247,6 +247,14 @@ bool normalizeHomeStorageUrl(const std::string& input, std::string& output) {
     return true;
 }
 
+bool normalizePairingServiceUrl(const std::string& input, std::string& output) {
+    if (!normalizeHomeStorageUrl(input, output) || !output.starts_with("https://")) {
+        output.clear();
+        return false;
+    }
+    return true;
+}
+
 std::string sanitizeFileName(const std::string& name) {
     std::string out;
     for (unsigned char c : name) {
@@ -635,9 +643,9 @@ State StateStore::load() {
     if (!input.good()) return state;
     const std::string json((std::istreambuf_iterator<char>(input)), {});
     const int schemaVersion = static_cast<int>(numberField(json, "schemaVersion"));
-    if (schemaVersion < 1 || schemaVersion > 6) return state;
+    if (schemaVersion < 1 || schemaVersion > 8) return state;
 
-    state.schemaVersion = 6;
+    state.schemaVersion = 8;
     state.serviceUrl = stringField(json, "serviceUrl");
     state.consolePublicKey = stringField(json, "consolePublicKey");
     state.sessionToken = stringField(json, "sessionToken");
@@ -669,6 +677,20 @@ State StateStore::load() {
         });
         if (google != state.providers.end() && (google->lastFolderId.empty() || google->lastFolderId == "root"))
             google->lastFolderId = legacyLastFolderId;
+    }
+    const auto google = std::find_if(state.providers.begin(), state.providers.end(), [](const ProviderConfig& provider) {
+        return provider.kind == ProviderKind::GoogleDrive;
+    });
+    if (google != state.providers.end() && (google->lastFolderId.empty() || google->lastFolderId == "selected"))
+        google->lastFolderId = "root";
+    // Schema 7 sessions were granted drive.file and cannot be reused after the
+    // return to drive.readonly. Force a fresh consent without touching local
+    // downloads, tasks, providers, language, or the custom service URL.
+    if (schemaVersion == 7) {
+        state.sessionToken.clear();
+        state.lastAccountId.clear();
+        state.accounts.clear();
+        if (google != state.providers.end()) google->lastFolderId = "root";
     }
     for (const auto& row : objectRows(json, "library")) {
         LibraryItem item;
@@ -731,7 +753,7 @@ bool StateStore::save(const State& state, std::string& error) {
         return false;
     }
     const std::string language(i18n::languageCode(i18n::parseLanguage(state.language)));
-    output << "{\"schemaVersion\":6,\"serviceUrl\":\"" << escape(state.serviceUrl)
+    output << "{\"schemaVersion\":8,\"serviceUrl\":\"" << escape(state.serviceUrl)
            << "\",\"consolePublicKey\":\"" << escape(state.consolePublicKey)
            << "\",\"sessionToken\":\"" << escape(state.sessionToken)
            << "\",\"lastAccountId\":\"" << escape(state.lastAccountId)

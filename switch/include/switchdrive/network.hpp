@@ -117,6 +117,7 @@ class AuthClient {
     bool claim(const std::string& id, const std::string& pollSecret, std::string& session, Account& account, std::string& error) const;
     bool accounts(const std::string& session, std::vector<Account>& accounts, std::string& error) const;
     bool accessToken(const std::string& session, const std::string& accountId, std::string& token, std::string& error) const;
+    bool disconnect(const std::string& session, const std::string& accountId, std::string& error) const;
   private: HttpClient http_; std::string serviceUrl_;
 };
 
@@ -138,7 +139,8 @@ class IStorageProvider {
 };
 class GoogleStorageProvider final : public IStorageProvider {
   public:
-    GoogleStorageProvider(HttpClient http, std::string token) : drive_(std::move(http)), token_(std::move(token)) {}
+    GoogleStorageProvider(HttpClient http, std::string token)
+        : drive_(std::move(http)), token_(std::move(token)) {}
     ProviderCapabilities capabilities() const override { return {true,true,false,false,ChecksumKind::Md5}; }
     bool list(const std::string&, bool, const std::string&, std::vector<RemoteEntry>&, std::string&, std::string&) const override;
     DownloadRequest downloadRequest(const RemoteEntry&) const override;

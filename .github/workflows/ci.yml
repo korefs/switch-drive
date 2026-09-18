@@ -51,6 +51,26 @@ jobs:
       - name: Build
         run: npm run build
 
+  worker-and-site:
+    name: Worker and public site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - name: Check Worker types
+        working-directory: worker
+        run: npm ci && npm run check
+      - name: Check required public pages
+        run: |
+          test -f site/index.html
+          test -f site/privacy/index.html
+          test -f site/terms/index.html
+          test -f site/_headers
+
   home-storage:
     name: Home Storage build and tests
     runs-on: ubuntu-latest

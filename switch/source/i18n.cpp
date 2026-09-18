@@ -27,9 +27,15 @@ using Catalog = std::array<const char*, textCount()>;
  X("Could not start: %s", "Não foi possível iniciar: %s", "No se pudo iniciar: %s") \
  X("On your phone, open:", "No celular, abra:", "En tu teléfono, abre:") \
  X("Code", "Código", "Código") \
- X("A: check now   B: cancel", "A: verificar agora   B: cancelar", "A: comprobar ahora   B: cancelar") \
+ X("Check connection", "Checar conexão", "Comprobar conexión") \
  X("Scan with your phone to continue.", "Escaneie com o celular para continuar.", "Escanea con tu teléfono para continuar.") \
  X("Connected: %s", "Conectado: %s", "Conectado: %s") \
+ X("Connection confirmed", "Conexão confirmada", "Conexión confirmada") \
+ X("Go to files", "Ir para arquivos", "Ir a archivos") \
+ X("Disconnect Google Drive", "Desconectar Google Drive", "Desconectar Google Drive") \
+ X("Disconnect this account and delete its stored authorization?", "Desconectar esta conta e apagar a autorização armazenada?", "¿Desconectar esta cuenta y borrar la autorización almacenada?") \
+ X("Disconnecting account...", "Desconectando conta...", "Desconectando cuenta...") \
+ X("Account disconnected.", "Conta desconectada.", "Cuenta desconectada.") \
  X("Connect an account first", "Conecte uma conta primeiro", "Conecta una cuenta primero") \
  X("Remote file changed", "Arquivo remoto mudou", "El archivo remoto cambió") \
  X("Partial download found", "Download parcial encontrado", "Descarga parcial encontrada") \
@@ -66,10 +72,10 @@ using Catalog = std::array<const char*, textCount()>;
  X("No NSP installation will start.", "Nenhuma instalação NSP será iniciada.", "No se iniciará ninguna instalación NSP.") \
  X("Files", "Arquivos", "Archivos") \
  X("Drive error: %s", "Erro do Drive: %s", "Error de Drive: %s") \
- X("Shared with me", "Compartilhados comigo", "Compartidos conmigo") \
  X("My Drive", "Meu Drive", "Mi Drive") \
+ X("Shared with me", "Compartilhados comigo", "Compartidos conmigo") \
  X("Folder is empty.", "Pasta vazia.", "La carpeta está vacía.") \
- X("A: open  X: download  Y: download and install  L: shared  B: back", "A: abrir  X: baixar  Y: baixar e instalar  L: compartilhados  B: voltar", "A: abrir  X: descargar  Y: descargar e instalar  L: compartidos  B: volver") \
+ X("A: open  X: download  Y: download and install  B: back", "A: abrir  X: baixar  Y: baixar e instalar  B: voltar", "A: abrir  X: descargar  Y: descargar e instalar  B: volver") \
  X("Library", "Biblioteca", "Biblioteca") \
  X("No indexed downloads.", "Nenhum download indexado.", "No hay descargas indexadas.") \
  X("File missing", "Arquivo ausente", "Archivo ausente") \
@@ -81,6 +87,8 @@ using Catalog = std::array<const char*, textCount()>;
  X("Stick / D-pad: move   A: select   B: menu   L/R: section   +: exit", "Analógico / direcional: mover   A: selecionar   B: menu   L/R: seção   +: sair", "Stick / cruceta: mover   A: elegir   B: menú   L/R: sección   +: salir") \
  X("Exit", "Sair", "Salir") \
  X("Language", "Idioma", "Idioma") \
+ X("Google OAuth Pairing API", "API de pareamento OAuth do Google", "API de vinculación OAuth de Google") \
+ X("Enter an HTTPS origin without a path.", "Informe uma origem HTTPS sem caminho.", "Introduce un origen HTTPS sin ruta.") \
  X("Invalid NRO: NRO0 header missing", "NRO inválido: cabeçalho NRO0 ausente", "NRO inválido: falta la cabecera NRO0") \
  X("Invalid NRO: size outside limit", "NRO inválido: tamanho fora do limite", "NRO inválido: tamaño fuera del límite") \
  X("A homebrew with this name already exists", "Já existe uma homebrew com esse nome", "Ya existe un homebrew con este nombre") \
@@ -215,7 +223,7 @@ using Catalog = std::array<const char*, textCount()>;
  X("Controller ready", "Controle conectado", "Control conectado") \
  X("Connect a controller", "Conecte um controle", "Conecta un control") \
  X("Waiting for input focus", "Aguardando foco de controle", "Esperando el foco de control") \
- X("Version 0.2.7", "Versão 0.2.7", "Versión 0.2.7") \
+ X("Version 0.2.8", "Versão 0.2.8", "Versión 0.2.8") \
  X("Preparing download…", "Preparando download…", "Preparando descarga…") \
  X("Loading files…", "Carregando arquivos…", "Cargando archivos…") \
  X("Verifying downloaded file…", "Verificando arquivo baixado…", "Verificando archivo descargado…") \
