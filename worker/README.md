@@ -68,12 +68,3 @@ and enter your origin:
 ```text
 https://api.example.com
 ```
-
-## Existing `drive.file` deployments
-
-Update the OAuth consent configuration, deploy the Worker, and invalidate old
-sessions and accounts during a planned cutover. Back up Neon first; then run
-the cleanup SQL documented in the root README. Users must pair again to grant
-the new read-only scope. Picker-era database columns are intentionally retained
-for a non-destructive migration, but the service clears and no longer returns
-their rows.
