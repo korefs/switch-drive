@@ -259,6 +259,35 @@ void testPausedAndTruncatedHttpDownloads(const fs::path& root) {
     }
 }
 
+void testExactHttpRange() {
+    const auto bytes = payload(4096);
+    constexpr uint64_t offset = 333, amount = 777;
+    std::vector<unsigned char> selected(bytes.begin() + offset, bytes.begin() + offset + amount);
+    const std::string headers = "HTTP/1.1 206 Partial Content\r\nContent-Length: " + std::to_string(amount) +
+        "\r\nContent-Range: bytes " + std::to_string(offset) + "-" + std::to_string(offset + amount - 1) + "/" + std::to_string(bytes.size()) +
+        "\r\nETag: \"range\"\r\nConnection: close\r\n\r\n";
+    LoopbackServer server(headers, selected, 37);
+    std::vector<unsigned char> received;
+    std::string etag = "\"range\"", error;
+    assert(HttpClient{}.range(server.url(), {}, offset, amount, bytes.size(), etag,
+        [&](uint64_t relative, const void* data, size_t size, std::string&) {
+            assert(relative == received.size());
+            const auto* first = static_cast<const unsigned char*>(data);
+            received.insert(received.end(), first, first + size);
+            return true;
+        }, etag, error));
+    server.wait();
+    assert(received == selected);
+    assert(server.request().find("Range: bytes=333-1109") != std::string::npos);
+    assert(server.request().find("If-Range: \"range\"") != std::string::npos);
+
+    LoopbackServer ignored(okHeaders(amount), selected);
+    received.clear(); etag.clear(); error.clear();
+    assert(!HttpClient{}.range(ignored.url(), {}, offset, amount, bytes.size(), {},
+        [&](uint64_t, const void*, size_t, std::string&) { return true; }, etag, error));
+    assert(!error.empty());
+}
+
 } // namespace
 
 int main() {
@@ -270,6 +299,7 @@ int main() {
     testFreshHttpDownload(root);
     testResumedHttpDownload(root);
     testPausedAndTruncatedHttpDownloads(root);
+    testExactHttpRange();
     fs::remove_all(root);
     return 0;
 }

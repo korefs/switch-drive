@@ -61,6 +61,14 @@ struct DownloadContext {
     bool writeFailed{};
 };
 
+struct ExactRangeContext {
+    uint64_t first{}, size{}, total{}, received{};
+    long status{};
+    std::string etag, contentRange, expectedEtag, error;
+    NczSink sink;
+    bool bodyAllowed{}, rejected{}, failed{};
+};
+
 int pump(void* user, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
     const auto* activity = static_cast<const ActivityCallback*>(user);
     return continueHttpActivity(activity) ? 0 : 1;
@@ -135,6 +143,50 @@ size_t captureDownloadHeader(char* buffer, size_t size, size_t count, void* user
         if (context->headersAccepted && !context->headersAccepted(context->etag)) {
             context->rejected = true;
             context->rejection = i18n::tr(i18n::TextId::ResponseSaveFailed);
+            return size * count;
+        }
+        context->bodyAllowed = true;
+        return size * count;
+    }
+    const auto colon = line.find(':');
+    if (colon != std::string::npos) {
+        const std::string key = lower(line.substr(0, colon));
+        const std::string value = trim(line.substr(colon + 1));
+        if (key == "etag") context->etag = value;
+        if (key == "content-range") context->contentRange = value;
+    }
+    return size * count;
+}
+
+size_t writeExactRange(void* contents, size_t size, size_t count, void* pointer) {
+    auto* context = static_cast<ExactRangeContext*>(pointer);
+    const size_t bytes = size * count;
+    if (!context->bodyAllowed || context->received > context->size || bytes > context->size - context->received) {
+        context->rejected = true;
+        return 0;
+    }
+    if (context->sink && !context->sink(context->received, contents, bytes, context->error)) {
+        context->failed = true;
+        return 0;
+    }
+    context->received += bytes;
+    return bytes;
+}
+
+size_t captureExactRangeHeader(char* buffer, size_t size, size_t count, void* user) {
+    auto* context = static_cast<ExactRangeContext*>(user);
+    std::string line(buffer, size * count);
+    if (line.rfind("HTTP/", 0) == 0) {
+        const auto space = line.find(' ');
+        context->status = space == std::string::npos ? 0 : std::strtol(line.c_str() + space + 1, nullptr, 10);
+        context->etag.clear(); context->contentRange.clear(); context->bodyAllowed = false; context->rejected = false;
+        return size * count;
+    }
+    if (line == "\r\n" || line == "\n") {
+        if (context->status >= 100 && context->status < 400 && context->status != 200 && context->status != 206) return size * count;
+        if (!validateExactRangeResponse(context->status, context->contentRange, context->first, context->size, context->total) ||
+            (!context->expectedEtag.empty() && !context->etag.empty() && context->etag != context->expectedEtag)) {
+            context->rejected = true;
             return size * count;
         }
         context->bodyAllowed = true;
@@ -619,6 +671,45 @@ bool HttpClient::download(const std::string& url, const std::vector<std::string>
         return false;
     }
     result.status = DownloadStatus::Completed;
+    return true;
+}
+
+bool HttpClient::range(const std::string& url, const std::vector<std::string>& headers, uint64_t offset, uint64_t size,
+    uint64_t totalSize, const std::string& ifRange, const NczSink& sink, std::string& etag, std::string& error) const {
+    if (!size || offset > totalSize || size > totalSize - offset || !sink) {
+        error = i18n::tr(i18n::TextId::RangeDenied);
+        return false;
+    }
+    CURL* curl = curl_easy_init();
+    if (!curl) { error = i18n::tr(i18n::TextId::CurlUnavailable); return false; }
+    auto all = headers;
+    all.emplace_back("Range: bytes=" + std::to_string(offset) + "-" + std::to_string(offset + size - 1));
+    if (!ifRange.empty()) all.emplace_back("If-Range: " + ifRange);
+    curl_slist* list = nullptr;
+    configure(curl, all, list, error, &activity_);
+    ExactRangeContext context{offset, size, totalSize, 0, 0, {}, {}, ifRange, {}, sink};
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeExactRange);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &context);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, captureExactRangeHeader);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &context);
+    const auto result = curl_easy_perform(curl);
+    curl_slist_free_all(list);
+    curl_easy_cleanup(curl);
+    if (!context.etag.empty()) {
+        if (!etag.empty() && etag != context.etag) context.rejected = true;
+        else etag = context.etag;
+    }
+    if (context.failed) { error = context.error; return false; }
+    if (context.rejected || !context.bodyAllowed) { error = i18n::tr(i18n::TextId::StreamingRangeRequired); return false; }
+    if (result != CURLE_OK) {
+        error = result == CURLE_ABORTED_BY_CALLBACK ? i18n::tr(i18n::TextId::OperationCancelled) : curl_easy_strerror(result);
+        return false;
+    }
+    if (context.received != size) {
+        error = i18n::tr(i18n::TextId::StreamingRangeRequired);
+        return false;
+    }
     return true;
 }
 

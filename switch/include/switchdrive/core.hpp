@@ -14,6 +14,7 @@
 namespace switchdrive {
 
 enum class TaskState { Queued, Downloading, Paused, Verifying, Installing, Completed, Failed, Cancelled };
+enum class TaskKind { Download, StreamInstall };
 enum class LocalState { Present, Missing, NotDownloaded };
 enum class StorageKind { Regular, Concatenated };
 enum class ProviderKind { GoogleDrive, HomeStorage };
@@ -44,6 +45,7 @@ struct Task {
     TaskState state{TaskState::Queued};
     LocalState localState{LocalState::NotDownloaded};
     StorageKind storageKind{StorageKind::Regular};
+    TaskKind kind{TaskKind::Download};
     bool installAfterDownload{};
     std::string error;
 };
@@ -54,7 +56,7 @@ struct LibraryItem {
     StorageKind storageKind{StorageKind::Regular};
 };
 
-struct NspContentEntry { std::string id; uint64_t size{}; uint8_t type{}; };
+struct NspContentEntry { std::string id, sha256; uint64_t size{}; uint8_t type{}; };
 struct NspPackageInfo {
     NspContentKind kind{NspContentKind::Unknown};
     std::string metaId, baseTitleId, metaNcaId;
@@ -75,16 +77,16 @@ struct InstalledNspInfo {
 };
 // This compact journal is intentionally independent of normal library state.
 // NCM recovery trusts live metadata, not the phase string.
-struct NspJournalContent { std::string id, placeholderId; bool created{}; };
+struct NspJournalContent { std::string id, placeholderId; bool created{}, completed{}, registered{}; };
 struct NspInstallJournal {
     std::string operation, libraryId, localPath, phase;
     NspPackageInfo package;
     NspInstallStorage targetStorage{NspInstallStorage::SdCard};
     std::vector<NspJournalContent> contents;
-    bool ticketWasPresent{}, ticketImported{};
+    bool ticketWasPresent{}, ticketImported{}, streaming{};
 };
 struct State {
-    int schemaVersion{8};
+    int schemaVersion{9};
     std::string serviceUrl, consolePublicKey, sessionToken, lastAccountId, activeProviderId{"google-drive"}, language{"en-US"};
     std::vector<Account> accounts;
     std::vector<ProviderConfig> providers{{"google-drive","","","","root",ProviderKind::GoogleDrive,false}};
@@ -167,8 +169,10 @@ class StateStore {
 struct Pfs0Entry { std::string name; uint64_t offset{}, size{}; };
 class Pfs0 {
   public:
+    using Reader = std::function<bool(uint64_t, void*, size_t, std::string&)>;
     bool open(const std::filesystem::path& path, StorageKind kind, std::string& error, uint64_t segmentSize = kFat32FileLimit);
     bool open(const std::filesystem::path& path, std::string& error) { return open(path, StorageKind::Regular, error); }
+    bool open(uint64_t totalSize, Reader reader, std::string& error);
     const std::vector<Pfs0Entry>& entries() const { return entries_; }
     const Pfs0Entry* find(const std::string& name) const;
     bool read(const Pfs0Entry& entry, uint64_t offset, void* buffer, size_t size, std::string& error) const;
@@ -180,11 +184,14 @@ class Pfs0 {
     StorageKind kind_{StorageKind::Regular};
     uint64_t segmentSize_{kFat32FileLimit};
     mutable LocalFile input_;
+    Reader reader_;
 };
 
 using NczSink = std::function<bool(uint64_t, const void*, size_t, std::string&)>;
+using PackageStream = std::function<bool(uint64_t, uint64_t, const NczSink&, std::string&)>;
 bool inspectNcz(const Pfs0& pfs0, const Pfs0Entry& entry, uint64_t& decompressedSize, std::string& error);
 bool streamNcz(const Pfs0& pfs0, const Pfs0Entry& entry, const NczSink& sink, std::string& error);
+bool streamNcz(const Pfs0& pfs0, const Pfs0Entry& entry, const PackageStream& source, const NczSink& sink, std::string& error);
 
 class NroInstaller {
   public:
@@ -213,10 +220,15 @@ class NspInstaller {
     bool validate(const std::filesystem::path& source, StorageKind kind, std::string& error, uint64_t segmentSize = kFat32FileLimit) const;
     bool validate(const std::filesystem::path& source, std::string& error) const { return validate(source, StorageKind::Regular, error); }
     bool inspect(const std::filesystem::path& source, StorageKind kind, NspPackageInfo& info, std::string& error, uint64_t segmentSize = kFat32FileLimit) const;
+    bool inspect(Pfs0& pfs0, NspPackageInfo& info, std::string& error) const;
     bool parseCnmt(const void* data, size_t size, NspPackageInfo& info, std::string& error) const;
     bool queryInstalled(const NspPackageInfo& package, std::vector<InstalledNspInfo>& installed, std::string& error) const;
     bool install(const std::filesystem::path& source, StorageKind kind, const NspPackageInfo& package, NspInstallStorage destination, StateStore& store, NspInstallJournal& journal, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const;
     bool recover(StateStore& store, NspInstallJournal& journal, bool& installCommitted, std::string& error) const;
+    bool installStream(Pfs0& pfs0, const PackageStream& source, const NspPackageInfo& package,
+        NspInstallStorage destination, StateStore& store, NspInstallJournal& journal,
+        std::function<bool(uint64_t,uint64_t)> progress, bool& resumable, std::string& error) const;
+    bool discardStream(StateStore& store, NspInstallJournal& journal, std::string& error) const;
     bool install(const std::filesystem::path& source, StorageKind kind, std::string& contentId, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const;
     bool install(const std::filesystem::path& source, std::string& contentId, std::function<bool(uint64_t,uint64_t)> progress, std::string& error) const { return install(source, StorageKind::Regular, contentId, std::move(progress), error); }
 };

@@ -11,6 +11,8 @@
 #include <sstream>
 #include <vector>
 
+#include <mbedtls/sha256.h>
+
 #ifdef __SWITCH__
 #include <switch.h>
 #endif
@@ -327,7 +329,7 @@ bool NspInstaller::parseCnmt(const void* raw, size_t size, NspPackageInfo& out, 
     for (uint16_t i = 0; i < header.contentCount; ++i) {
         const auto& entry = *reinterpret_cast<const PackagedContentInfoRaw*>(bytes + entriesStart + static_cast<size_t>(i) * sizeof(PackagedContentInfoRaw));
         if (entry.info.type == 6) continue; // Delta fragments are not installable here.
-        NspContentEntry content{hexId(entry.info.id, sizeof(entry.info.id)), contentSize(entry.info), entry.info.type};
+        NspContentEntry content{hexId(entry.info.id, sizeof(entry.info.id)), hexId(entry.hash, sizeof(entry.hash)), contentSize(entry.info), entry.info.type};
         if (!content.size) { error = i18n::tr(i18n::TextId::CnmtEmptyContent); return false; }
         out.totalInstallBytes += content.size;
         out.contents.push_back(std::move(content));
@@ -337,8 +339,17 @@ bool NspInstaller::parseCnmt(const void* raw, size_t size, NspPackageInfo& out, 
 }
 
 bool NspInstaller::inspect(const fs::path& source, StorageKind kind, NspPackageInfo& info, std::string& error, uint64_t segmentSize) const {
-    if (!validate(source, kind, error, segmentSize)) return false;
     Pfs0 pfs0; if (!pfs0.open(source, kind, error, segmentSize)) return false;
+    return inspect(pfs0, info, error);
+}
+
+bool NspInstaller::inspect(Pfs0& pfs0, NspPackageInfo& info, std::string& error) const {
+    size_t metadataCount{}; bool hasNca{};
+    for (const auto& entry : pfs0.entries()) {
+        if (extensionOf(entry.name) == ".nca" || extensionOf(entry.name) == ".ncz") hasNca = true;
+        if (entry.name.ends_with(".cnmt.nca")) ++metadataCount;
+    }
+    if (!hasNca || metadataCount != 1) { error = i18n::tr(metadataCount > 1 ? i18n::TextId::NspAmbiguous : i18n::TextId::NspMissingContents); return false; }
     const Pfs0Entry* meta = nullptr;
     for (const auto& entry : pfs0.entries()) if (entry.name.ends_with(".cnmt.nca")) meta = &entry;
     if (!meta) { error = i18n::tr(i18n::TextId::CnmtMissing); return false; }
@@ -470,7 +481,7 @@ bool NspInstaller::install(const fs::path& source, StorageKind kind, const NspPa
     journal.operation = "install"; journal.phase = "prepared"; journal.package = package; journal.targetStorage = destination;
     journal.contents.clear();
     std::vector<NspContentEntry> all = package.contents;
-    all.push_back({package.metaNcaId, metaEntry->size, static_cast<uint8_t>(NcmContentType_Meta)});
+    all.push_back({package.metaNcaId, {}, metaEntry->size, static_cast<uint8_t>(NcmContentType_Meta)});
     for (const auto& item : all) {
         uint8_t rawId[16]{}; if (!hexToBytes(item.id, rawId, sizeof(rawId))) { error = i18n::tr(i18n::TextId::InvalidNcaId); goto fail; }
         NcmContentId id{}; std::memcpy(id.c, rawId, sizeof(rawId)); bool exists{};
@@ -514,7 +525,7 @@ bool NspInstaller::install(const fs::path& source, StorageKind kind, const NspPa
             journal.phase = "registered"; if (!store.saveInstallJournal(journal, error)) goto rollback;
         }
     }
-    if (package.hasTicket) {
+    if (package.hasTicket && !journal.ticketImported) {
         if (!store.saveInstallJournal(journal, error) || !importPackageTicket(pfs0, journal, error) || !store.saveInstallJournal(journal, error)) goto rollback;
     }
     {
@@ -539,6 +550,193 @@ fail:
 #endif
 }
 
+bool NspInstaller::installStream(Pfs0& pfs0, const PackageStream& source, const NspPackageInfo& package,
+    NspInstallStorage destination, StateStore& store, NspInstallJournal& journal,
+    std::function<bool(uint64_t,uint64_t)> progress, bool& resumable, std::string& error) const {
+    resumable = false;
+#ifndef __SWITCH__
+    (void)pfs0; (void)source; (void)package; (void)destination; (void)store; (void)journal; (void)progress;
+    error = i18n::tr(i18n::TextId::NspInstallSwitchOnly); return false;
+#else
+    const auto* metaEntry = pfs0.find(package.metaNcaId + ".cnmt.nca");
+    if (!metaEntry) { error = i18n::tr(i18n::TextId::MetadataNcaMissing); return false; }
+    std::vector<NspContentEntry> all = package.contents;
+    all.push_back({package.metaNcaId, {}, metaEntry->size, static_cast<uint8_t>(NcmContentType_Meta)});
+    Result rc = ncmInitialize();
+    if (R_FAILED(rc)) { error = i18n::tr(i18n::TextId::NcmUnavailable); return false; }
+    NcmContentStorage contentStorage{}; NcmContentMetaDatabase database{};
+    const NcmStorageId storageId = destination == NspInstallStorage::InternalUser ? NcmStorageId_BuiltInUser : NcmStorageId_SdCard;
+    rc = ncmOpenContentStorage(&contentStorage, storageId);
+    if (R_SUCCEEDED(rc)) rc = ncmOpenContentMetaDatabase(&database, storageId);
+    if (R_FAILED(rc)) { ncmContentStorageClose(&contentStorage); ncmExit(); error = i18n::tr(i18n::TextId::InstallDestinationOpenFailed); return false; }
+    const auto closeServices = [&]() { ncmContentMetaDatabaseClose(&database); ncmContentStorageClose(&contentStorage); ncmExit(); };
+
+    const bool resuming = journal.streaming && !journal.contents.empty();
+    if (resuming) {
+        if (journal.targetStorage != destination || journal.package.metaId != package.metaId || journal.package.version != package.version || journal.contents.size() != all.size()) {
+            closeServices(); error = i18n::tr(i18n::TextId::JournalInvalid); return false;
+        }
+        for (size_t i = 0; i < all.size(); ++i) if (journal.contents[i].id != all[i].id) {
+            closeServices(); error = i18n::tr(i18n::TextId::JournalInvalid); return false;
+        }
+        bool reconciled{};
+        for (size_t i = 0; i < all.size(); ++i) {
+            auto& saved = journal.contents[i]; if (!saved.created) continue;
+            uint8_t rawId[16]{}; hexToBytes(saved.id, rawId, sizeof(rawId));
+            NcmContentId id{}; std::memcpy(id.c, rawId, sizeof(rawId)); bool contentExists{};
+            if (R_FAILED(ncmContentStorageHas(&contentStorage, &contentExists, &id))) { closeServices(); error = i18n::tr(i18n::TextId::NcaQueryFailed); return false; }
+            if (contentExists) {
+                if (!saved.completed || !saved.registered) { saved.completed = true; saved.registered = true; reconciled = true; }
+                continue;
+            }
+            if (saved.registered) { saved.registered = false; saved.completed = false; reconciled = true; }
+            if (saved.completed) {
+                uint8_t rawPlaceholder[16]{}; bool holderExists{}; s64 holderSize{};
+                if (!hexToBytes(saved.placeholderId, rawPlaceholder, sizeof(rawPlaceholder))) { closeServices(); error = i18n::tr(i18n::TextId::JournalInvalid); return false; }
+                NcmPlaceHolderId placeholder{}; std::memcpy(placeholder.uuid.uuid, rawPlaceholder, sizeof(rawPlaceholder));
+                if (R_FAILED(ncmContentStorageHasPlaceHolder(&contentStorage, &holderExists, &placeholder)) ||
+                    (holderExists && R_FAILED(ncmContentStorageGetSizeFromPlaceHolderId(&contentStorage, &holderSize, &placeholder)))) {
+                    closeServices(); error = i18n::tr(i18n::TextId::NcaQueryFailed); return false;
+                }
+                if (!holderExists || holderSize < 0 || static_cast<uint64_t>(holderSize) != all[i].size) { saved.completed = false; reconciled = true; }
+            }
+        }
+        if (reconciled && !store.saveInstallJournal(journal, error)) { closeServices(); return false; }
+    } else {
+        journal.operation = "install"; journal.phase = "streaming"; journal.package = package;
+        journal.targetStorage = destination; journal.streaming = true; journal.contents.clear();
+        for (const auto& item : all) {
+            uint8_t rawId[16]{};
+            if (!hexToBytes(item.id, rawId, sizeof(rawId))) { closeServices(); error = i18n::tr(i18n::TextId::InvalidNcaId); return false; }
+            NcmContentId id{}; std::memcpy(id.c, rawId, sizeof(rawId)); bool exists{};
+            if (R_FAILED(ncmContentStorageHas(&contentStorage, &exists, &id))) { closeServices(); error = i18n::tr(i18n::TextId::NcaQueryFailed); return false; }
+            NspJournalContent saved; saved.id = item.id; saved.created = !exists; saved.completed = exists; saved.registered = exists;
+            if (!exists) {
+                NcmPlaceHolderId placeholder{};
+                if (R_FAILED(ncmContentStorageGeneratePlaceHolderId(&contentStorage, &placeholder))) { closeServices(); error = i18n::tr(i18n::TextId::PlaceholderCreateFailed); return false; }
+                saved.placeholderId = hexId(placeholder.uuid.uuid, sizeof(placeholder.uuid.uuid));
+            }
+            journal.contents.push_back(std::move(saved));
+        }
+        if (!store.saveInstallJournal(journal, error)) { closeServices(); return false; }
+    }
+
+    int64_t freeSpace{}; uint64_t needed{};
+    for (size_t i = 0; i < all.size(); ++i) if (journal.contents[i].created && !journal.contents[i].completed) needed += all[i].size;
+    rc = ncmContentStorageGetFreeSpaceSize(&contentStorage, &freeSpace);
+    if (R_FAILED(rc) || freeSpace < 0 || static_cast<uint64_t>(freeSpace) < needed) { closeServices(); error = i18n::tr(i18n::TextId::DestinationNoSpace); return false; }
+
+    appletLockExit();
+    uint64_t total{}, written{}; for (const auto& item : all) total += item.size;
+    for (size_t index = 0; index < all.size(); ++index) {
+        const auto& item = all[index]; auto& saved = journal.contents[index];
+        if (!saved.created || saved.completed) { written += item.size; if (progress) progress(written, total); continue; }
+        uint8_t rawId[16]{}, rawPlaceholder[16]{};
+        hexToBytes(item.id, rawId, sizeof(rawId)); hexToBytes(saved.placeholderId, rawPlaceholder, sizeof(rawPlaceholder));
+        NcmContentId id{}; NcmPlaceHolderId placeholder{};
+        std::memcpy(id.c, rawId, sizeof(rawId)); std::memcpy(placeholder.uuid.uuid, rawPlaceholder, sizeof(rawPlaceholder));
+        ncmContentStorageDeletePlaceHolder(&contentStorage, &placeholder);
+        if (R_FAILED(ncmContentStorageCreatePlaceHolder(&contentStorage, &id, &placeholder, item.size))) { error = i18n::tr(i18n::TextId::NcaReserveFailed); goto fatal; }
+        bool compressed{};
+        const auto* packageEntry = findContentEntry(pfs0, item.id, item.type == NcmContentType_Meta, compressed);
+        uint64_t packageSize = packageEntry ? packageEntry->size : 0;
+        if (packageEntry && compressed && !inspectNcz(pfs0, *packageEntry, packageSize, error)) goto fatal;
+        if (!packageEntry || packageSize != item.size) { error = i18n::tr(i18n::TextId::NcaMissingDuringInstall); goto fatal; }
+        mbedtls_sha256_context hash; mbedtls_sha256_init(&hash); mbedtls_sha256_starts(&hash, 0);
+        bool sinkFailed{}, paused{};
+        const auto writeContent = [&](uint64_t offset, const void* data, size_t amount, std::string& sinkError) {
+            if (R_FAILED(ncmContentStorageWritePlaceHolder(&contentStorage, &placeholder, offset, data, amount))) {
+                sinkFailed = true; sinkError = i18n::tr(i18n::TextId::NcaWriteFailed); return false;
+            }
+            mbedtls_sha256_update(&hash, static_cast<const unsigned char*>(data), amount);
+            written += amount;
+            if (progress && !progress(written, total)) { paused = true; sinkError = i18n::tr(i18n::TextId::InstallCancelled); return false; }
+            return true;
+        };
+        const bool streamed = compressed
+            ? streamNcz(pfs0, *packageEntry, source, writeContent, error)
+            : source(packageEntry->offset, packageEntry->size, writeContent, error);
+        if (!streamed) {
+            mbedtls_sha256_free(&hash);
+            ncmContentStorageDeletePlaceHolder(&contentStorage, &placeholder);
+            saved.completed = false; store.saveInstallJournal(journal, error);
+            const bool retryable = paused || (!sinkFailed && error != i18n::tr(i18n::TextId::NczDecompressionFailed));
+            if (retryable) { appletUnlockExit(); closeServices(); resumable = true; return false; }
+            goto fatal;
+        }
+        std::array<unsigned char, 32> digest{}; mbedtls_sha256_finish(&hash, digest.data()); mbedtls_sha256_free(&hash);
+        const std::string digestHex = hexId(digest.data(), digest.size());
+        const bool hashMatches = item.sha256.empty() ? digestHex.rfind(item.id, 0) == 0 : digestHex == item.sha256;
+        if (!hashMatches) { error = i18n::tr(i18n::TextId::ChecksumMismatch); goto fatal; }
+        if (R_FAILED(ncmContentStorageFlushPlaceHolder(&contentStorage))) { error = i18n::tr(i18n::TextId::NcaWriteFailed); goto fatal; }
+        saved.completed = true;
+        if (!store.saveInstallJournal(journal, error)) goto fatal;
+    }
+
+    if (package.hasTicket && !journal.ticketImported) {
+        journal.ticketWasPresent = true;
+        if (!store.saveInstallJournal(journal, error) || !importPackageTicket(pfs0, journal, error) || !store.saveInstallJournal(journal, error)) {
+            appletUnlockExit(); closeServices(); resumable = true; return false;
+        }
+    }
+    journal.phase = "registering"; if (!store.saveInstallJournal(journal, error)) goto fatal;
+    for (size_t index = 0; index < all.size(); ++index) {
+        auto& saved = journal.contents[index]; if (!saved.created || saved.registered) continue;
+        uint8_t rawId[16]{}, rawPlaceholder[16]{}; hexToBytes(saved.id, rawId, sizeof(rawId)); hexToBytes(saved.placeholderId, rawPlaceholder, sizeof(rawPlaceholder));
+        NcmContentId id{}; NcmPlaceHolderId placeholder{}; std::memcpy(id.c, rawId, sizeof(rawId)); std::memcpy(placeholder.uuid.uuid, rawPlaceholder, sizeof(rawPlaceholder));
+        if (R_FAILED(ncmContentStorageRegister(&contentStorage, &id, &placeholder))) { error = i18n::tr(i18n::TextId::NcaRegisterFailed); goto fatal; }
+        saved.registered = true;
+        if (!store.saveInstallJournal(journal, error)) goto fatal;
+    }
+    {
+        uint64_t title{}; std::stringstream titleStream; titleStream << std::hex << package.metaId; titleStream >> title;
+        NcmContentMetaKey key{}; key.id = title; key.version = package.version; key.type = package.kind == NspContentKind::BaseGame ? NcmContentMetaType_Application : package.kind == NspContentKind::Update ? NcmContentMetaType_Patch : NcmContentMetaType_AddOnContent; key.install_type = NcmContentInstallType_Full;
+        std::vector<uint8_t> metadata(sizeof(NcmContentMetaHeader) + package.extendedHeader.size() + all.size() * sizeof(NcmContentInfo));
+        auto* header = reinterpret_cast<NcmContentMetaHeader*>(metadata.data()); header->extended_header_size = package.extendedHeader.size(); header->content_count = all.size(); header->attributes = package.attributes; header->storage_id = storageId;
+        std::memcpy(metadata.data() + sizeof(*header), package.extendedHeader.data(), package.extendedHeader.size());
+        auto* infos = reinterpret_cast<NcmContentInfo*>(metadata.data() + sizeof(*header) + package.extendedHeader.size());
+        for (size_t i = 0; i < all.size(); ++i) { hexToBytes(all[i].id, infos[i].content_id.c, sizeof(infos[i].content_id.c)); ncmU64ToContentInfoSize(all[i].size, &infos[i]); infos[i].content_type = all[i].type; }
+        if (R_FAILED(ncmContentMetaDatabaseSet(&database, &key, metadata.data(), metadata.size())) || R_FAILED(ncmContentMetaDatabaseCommit(&database))) { error = i18n::tr(i18n::TextId::MetadataCommitFailed); goto fatal; }
+        if (!refreshApplicationRecord(package, key, storageId, error)) { appletUnlockExit(); closeServices(); resumable = true; return false; }
+        journal.phase = "committed"; if (!store.saveInstallJournal(journal, error)) error = i18n::tr(i18n::TextId::JournalUpdateAfterInstallFailed);
+    }
+    appletUnlockExit(); closeServices(); return true;
+fatal:
+    appletUnlockExit(); closeServices();
+    { std::string cleanup; discardStream(store, journal, cleanup); if (error.empty()) error = cleanup; }
+    return false;
+#endif
+}
+
+bool NspInstaller::discardStream(StateStore& store, NspInstallJournal& journal, std::string& error) const {
+#ifndef __SWITCH__
+    (void)store; (void)journal; error = i18n::tr(i18n::TextId::RecoverySwitchOnly); return false;
+#else
+    if (!journal.streaming) return store.clearInstallJournal(error);
+    Result rc = ncmInitialize();
+    if (R_FAILED(rc)) { error = i18n::tr(i18n::TextId::RecoveryNcmUnavailable); return false; }
+    const NcmStorageId storageId = journal.targetStorage == NspInstallStorage::InternalUser ? NcmStorageId_BuiltInUser : NcmStorageId_SdCard;
+    NcmContentStorage storage{}; NcmContentMetaDatabase database{};
+    rc = ncmOpenContentStorage(&storage, storageId); if (R_SUCCEEDED(rc)) rc = ncmOpenContentMetaDatabase(&database, storageId);
+    if (R_FAILED(rc)) { ncmContentStorageClose(&storage); ncmExit(); error = i18n::tr(i18n::TextId::RecoveryNcmUnavailable); return false; }
+    bool ok = true;
+    for (const auto& item : journal.contents) {
+        if (!item.created) continue;
+        if (!item.placeholderId.empty()) {
+            uint8_t raw[16]{}; if (hexToBytes(item.placeholderId, raw, sizeof(raw))) { NcmPlaceHolderId holder{}; std::memcpy(holder.uuid.uuid, raw, sizeof(raw)); ncmContentStorageDeletePlaceHolder(&storage, &holder); }
+        }
+        uint8_t rawId[16]{}; if (!hexToBytes(item.id, rawId, sizeof(rawId))) continue;
+        NcmContentId id{}; std::memcpy(id.c, rawId, sizeof(rawId)); bool present{}, orphan{};
+        if (R_FAILED(ncmContentStorageHas(&storage, &present, &id))) { ok = false; continue; }
+        if (present && (R_FAILED(ncmContentMetaDatabaseLookupOrphanContent(&database, &orphan, &id, 1)) || (orphan && R_FAILED(ncmContentStorageDelete(&storage, &id))))) ok = false;
+    }
+    ncmContentMetaDatabaseClose(&database); ncmContentStorageClose(&storage); ncmExit();
+    if (!ok) { error = i18n::tr(i18n::TextId::RecoveryCommitCheckFailed); return false; }
+    if (!store.clearInstallJournal(error)) return false;
+    journal = {}; return true;
+#endif
+}
+
 bool NspInstaller::recover(StateStore& store, NspInstallJournal& journal, bool& installCommitted, std::string& error) const {
     installCommitted = false;
 #ifndef __SWITCH__
@@ -558,6 +756,9 @@ bool NspInstaller::recover(StateStore& store, NspInstallJournal& journal, bool& 
         ncmContentMetaDatabaseClose(&database); ncmExit();
         if (R_FAILED(rc)) { error = i18n::tr(i18n::TextId::RecoveryCommitCheckFailed); return false; }
     }
+    // A streaming install keeps flushed, verified placeholders so the user can
+    // resume by content. Incomplete placeholders are recreated by installStream.
+    if (journal.operation == "install" && journal.streaming && !committed) return true;
     if (journal.operation == "install" && !committed) {
         Result rc = ncmInitialize(); if (R_FAILED(rc)) { error = i18n::tr(i18n::TextId::RecoveryNcmUnavailable); return false; }
         NcmContentStorage storage{}; const auto id = journal.targetStorage == NspInstallStorage::InternalUser ? NcmStorageId_BuiltInUser : NcmStorageId_SdCard;

@@ -107,4 +107,17 @@ RangeResponse validateRangeResponse(long status, const std::string& contentRange
     return RangeResponse::AcceptBody;
 }
 
+bool validateExactRangeResponse(long status, const std::string& contentRange, uint64_t first, uint64_t size, uint64_t total) {
+    if (status != 206 || !size || contentRange.rfind("bytes ", 0) != 0) return false;
+    const std::string value = contentRange.substr(6);
+    const auto dash = value.find('-');
+    const auto slash = value.find('/');
+    if (dash == std::string::npos || slash == std::string::npos || dash >= slash || first > UINT64_MAX - size) return false;
+    uint64_t parsedFirst{}, parsedLast{}, parsedTotal{};
+    if (!parseUnsigned(value.substr(0, dash), parsedFirst) ||
+        !parseUnsigned(value.substr(dash + 1, slash - dash - 1), parsedLast) ||
+        !parseUnsigned(value.substr(slash + 1), parsedTotal)) return false;
+    return parsedFirst == first && parsedLast == first + size - 1 && parsedTotal == total;
+}
+
 } // namespace switchdrive

@@ -258,7 +258,12 @@ using Catalog = std::array<const char*, textCount()>;
  X("Close Switch Drive?", "Fechar o Switch Drive?", "¿Cerrar Switch Drive?") \
  X("A transfer or installation is active. Cancel it and close Switch Drive?", "Há uma transferência ou instalação ativa. Cancelar e fechar o Switch Drive?", "Hay una transferencia o instalación activa. ¿Cancelarla y cerrar Switch Drive?") \
  X("network: applet=%d rx=%u/%u socket=%08x fallback=%d", "network: applet=%d rx=%u/%u socket=%08x fallback=%d", "network: applet=%d rx=%u/%u socket=%08x fallback=%d") \
- X("download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d", "download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d", "download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d")
+ X("download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d", "download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d", "download: applet=%d rx=%u/%u fallback=%d received=%llu written=%llu durable=%llu total_us=%llu wait_us=%llu write_us=%llu queue_peak=%llu async=%d") \
+ X("Preparing streamed installation…", "Preparando instalação por streaming…", "Preparando instalación por streaming…") \
+ X("Installation interrupted; select the file to resume", "Instalação interrompida; selecione o arquivo para retomar", "Instalación interrumpida; selecciona el archivo para reanudar") \
+ X("The provider did not confirm the exact range required for streaming", "O provedor não confirmou a faixa exata exigida pelo streaming", "El proveedor no confirmó el rango exacto requerido para el streaming") \
+ X("Discard streamed installation", "Descartar instalação por streaming", "Descartar instalación por streaming") \
+ X("Discard this paused installation and release its reserved content? Saves and existing games will not be removed.", "Descartar esta instalação pausada e liberar o conteúdo reservado? Saves e jogos existentes não serão removidos.", "¿Descartar esta instalación pausada y liberar el contenido reservado? No se eliminarán partidas ni juegos existentes.")
 
 #define EN(en, pt, es) en,
 constexpr const char* kEnglishKeys[] = { SD_TEXTS(EN) SD_HOME_TEXTS(EN) };

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <fstream>
 #include <map>
@@ -55,10 +56,11 @@ bool sameRemote(const Task& task, const RemoteEntry& remote, const std::string& 
 
 bool hasResumeIdentity(const Task& task) {
     return !task.providerId.empty() && !task.remoteId.empty() && !task.revision.empty() &&
-        task.expectedSize > 0 && !task.localPath.empty();
+        task.expectedSize > 0 && (task.kind == TaskKind::StreamInstall || !task.localPath.empty());
 }
 
 bool reconcileTask(Task& task, std::string& error) {
+    if (task.kind == TaskKind::StreamInstall) { task.localState = LocalState::NotDownloaded; return true; }
     if (!LocalFile::exists(task.localPath, task.storageKind)) {
         task.committedBytes = 0;
         task.localState = LocalState::NotDownloaded;
@@ -114,7 +116,7 @@ ui::FileRowModel fileRow(const RemoteEntry& entry, const State& state) {
             value.state != TaskState::Completed && value.state != TaskState::Cancelled;
     });
     const bool partial = task != state.tasks.end() &&
-        (task->committedBytes > 0 || !sameRemote(*task, entry, accountId) || !hasResumeIdentity(*task));
+        (task->kind == TaskKind::StreamInstall || task->committedBytes > 0 || !sameRemote(*task, entry, accountId) || !hasResumeIdentity(*task));
     const bool restartRequired = task != state.tasks.end() &&
         (!sameRemote(*task, entry, accountId) || !hasResumeIdentity(*task));
     return {entry.id, entry.name,
@@ -301,6 +303,12 @@ struct AppController::Impl {
         saveLocked(error);
     }
 
+    void removeTask(const std::string& id, std::string& error) {
+        std::scoped_lock lock(stateMutex);
+        std::erase_if(state.tasks, [&](const Task& task) { return task.id == id; });
+        saveLocked(error);
+    }
+
     void upsertTaskAndLibrary(const Task& task, const LibraryItem& item, std::string& error) {
         std::scoped_lock lock(stateMutex);
         const auto taskFound = std::find_if(state.tasks.begin(), state.tasks.end(), [&](const Task& value) { return value.id == task.id; });
@@ -461,10 +469,22 @@ void AppController::recover() {
         bool installCommitted{};
         if (NspInstaller{}.recover(impl_->store, journal, installCommitted, error)) {
             std::scoped_lock lock(impl_->stateMutex);
+            if (recovered.streaming && recovered.operation == "install") {
+                const auto task = std::find_if(impl_->state.tasks.begin(), impl_->state.tasks.end(), [&](const Task& value) {
+                    return value.id == recovered.libraryId;
+                });
+                if (installCommitted) {
+                    if (task != impl_->state.tasks.end()) impl_->state.tasks.erase(task);
+                } else if (!journal.operation.empty() && task != impl_->state.tasks.end()) {
+                    task->state = TaskState::Paused;
+                    task->error = i18n::tr(i18n::TextId::StreamInstallInterrupted);
+                }
+                impl_->saveLocked(error);
+            }
             const auto item = std::find_if(impl_->state.library.begin(), impl_->state.library.end(), [&](const LibraryItem& value) {
                 return value.id == recovered.libraryId;
             });
-            if (item != impl_->state.library.end() && recovered.operation == "install") {
+            if (!recovered.streaming && item != impl_->state.library.end() && recovered.operation == "install") {
                 if (installCommitted) {
                     const auto task = std::find_if(impl_->state.tasks.begin(), impl_->state.tasks.end(), [&](const Task& value) {
                         return value.id == recovered.libraryId;
@@ -505,9 +525,11 @@ void AppController::recover() {
             task.state = TaskState::Paused;
             if (!hasResumeIdentity(task)) task.error = i18n::tr(i18n::TextId::PartialIdentityRestart);
             else if (!reconcileTask(task, error)) { task.state = TaskState::Failed; task.error = error; }
-            else task.error = task.committedBytes == task.expectedSize
-                ? i18n::tr(i18n::TextId::CompleteAwaitingVerification)
-                : i18n::tr(i18n::TextId::InterruptedDownload);
+            else task.error = task.kind == TaskKind::StreamInstall
+                ? i18n::tr(i18n::TextId::StreamInstallInterrupted)
+                : task.committedBytes == task.expectedSize
+                    ? i18n::tr(i18n::TextId::CompleteAwaitingVerification)
+                    : i18n::tr(i18n::TextId::InterruptedDownload);
             changed = true;
         }
         if (changed) impl_->saveLocked(error);
@@ -759,7 +781,8 @@ void AppController::download(size_t index, bool installAfter, NspInstallStorage 
         if (index >= impl_->remoteFiles.size() || impl_->remoteFiles[index].folder || !impl_->remoteFiles[index].canDownload) return;
         remote = impl_->remoteFiles[index];
     }
-    impl_->launch(ui::OperationPhase::Preparing, i18n::TextId::Transfers, i18n::TextId::PreparingDownload, true,
+    impl_->launch(ui::OperationPhase::Preparing, i18n::TextId::Transfers,
+        installAfter && isInstallablePackage(remote.name) ? i18n::TextId::PreparingStreamInstall : i18n::TextId::PreparingDownload, true,
         [this, remote, installAfter, destination, restart](uint64_t generation) {
             State state = impl_->stateCopy();
             const std::string providerId = remote.providerId.empty() ? "google-drive" : remote.providerId;
@@ -771,15 +794,23 @@ void AppController::download(size_t index, bool installAfter, NspInstallStorage 
                 impl_->finish(generation, ui::OperationPhase::Failed, error); return;
             }
             const std::string accountId = provider->kind == ProviderKind::GoogleDrive ? state.lastAccountId : "";
+            const TaskKind requestedKind = installAfter && isInstallablePackage(remote.name)
+                ? TaskKind::StreamInstall : TaskKind::Download;
             Task task;
             const auto previous = std::find_if(state.tasks.begin(), state.tasks.end(), [&](const Task& value) {
                 return value.providerId == providerId && value.accountId == accountId && value.remoteId == remote.id &&
-                    value.state != TaskState::Completed && value.state != TaskState::Cancelled;
+                    value.kind == requestedKind && value.state != TaskState::Completed && value.state != TaskState::Cancelled;
             });
             if (previous != state.tasks.end()) {
                 task = *previous;
                 if (restart) {
-                    if (LocalFile::exists(task.localPath, task.storageKind) &&
+                    if (task.kind == TaskKind::StreamInstall) {
+                        NspInstallJournal pending; bool exists{};
+                        if (!impl_->store.loadInstallJournal(pending, error, exists) ||
+                            (exists && pending.libraryId == task.id && !NspInstaller{}.discardStream(impl_->store, pending, error))) {
+                            impl_->finish(generation, ui::OperationPhase::Failed, error); return;
+                        }
+                    } else if (LocalFile::exists(task.localPath, task.storageKind) &&
                         !LocalFile::remove(task.localPath, task.storageKind, error)) {
                         impl_->finish(generation, ui::OperationPhase::Failed,
                             formatted(i18n::TextId::CannotDeletePartial, error));
@@ -794,8 +825,96 @@ void AppController::download(size_t index, bool installAfter, NspInstallStorage 
                 task.id = makeId();
                 applyRemote(task, remote, accountId, impl_->store);
             }
+            task.kind = requestedKind;
             task.installAfterDownload = installAfter;
             task.state = TaskState::Queued;
+            if (requestedKind == TaskKind::StreamInstall) {
+                task.localPath.clear(); task.localState = LocalState::NotDownloaded; task.error.clear();
+                impl_->upsertTask(task, error);
+                if (!error.empty()) { impl_->finish(generation, ui::OperationPhase::Failed, error); return; }
+                const DownloadRequest request = provider->kind == ProviderKind::GoogleDrive
+                    ? GoogleStorageProvider(impl_->http(generation), token).downloadRequest(remote)
+                    : HomeStorageProvider(impl_->http(generation), *provider).downloadRequest(remote);
+                std::string responseEtag = task.etag;
+                const PackageStream streamRange = [&](uint64_t offset, uint64_t size, const NczSink& sink, std::string& rangeError) {
+                    return impl_->http(generation).range(request.url, request.headers, offset, size,
+                        task.expectedSize, responseEtag, sink, responseEtag, rangeError);
+                };
+                Pfs0 pfs0;
+                const Pfs0::Reader reader = [&](uint64_t offset, void* buffer, size_t size, std::string& readError) {
+                    uint64_t copied{};
+                    const bool ok = streamRange(offset, size,
+                        [&](uint64_t relative, const void* data, size_t amount, std::string& sinkError) {
+                            if (relative != copied || amount > size - copied) { sinkError = i18n::tr(i18n::TextId::Pfs0InvalidData); return false; }
+                            std::memcpy(static_cast<unsigned char*>(buffer) + copied, data, amount);
+                            copied += amount; return true;
+                        }, readError);
+                    return ok && copied == size;
+                };
+                NspInstaller installer;
+                NspPackageInfo package;
+                std::vector<InstalledNspInfo> existing;
+                if (!pfs0.open(task.expectedSize, reader, error) || !installer.inspect(pfs0, package, error) ||
+                    !installer.queryInstalled(package, existing, error)) {
+                    task.state = impl_->operation.shouldContinue(generation) ? TaskState::Failed : TaskState::Paused;
+                    task.error = error; task.etag = responseEtag; impl_->upsertTask(task, error);
+                    impl_->finish(generation, task.state == TaskState::Paused ? ui::OperationPhase::Paused : ui::OperationPhase::Failed, task.error); return;
+                }
+                task.etag = responseEtag;
+                const auto decision = decideNspInstall(package, existing);
+                if (decision == NspInstallDecision::DowngradeBlocked) {
+                    error = i18n::tr(i18n::TextId::DowngradeBlocked); impl_->removeTask(task.id, error);
+                    impl_->finish(generation, ui::OperationPhase::Failed, i18n::tr(i18n::TextId::DowngradeBlocked)); return;
+                }
+                NspInstallJournal journal; bool journalExists{};
+                if (!impl_->store.loadInstallJournal(journal, error, journalExists)) {
+                    impl_->finish(generation, ui::OperationPhase::Failed, error); return;
+                }
+                if (journalExists && (!journal.streaming || journal.libraryId != task.id)) {
+                    error = i18n::tr(i18n::TextId::DownloadRemovalPending);
+                    task.state = TaskState::Failed; task.error = error; impl_->upsertTask(task, error);
+                    impl_->finish(generation, ui::OperationPhase::Failed, task.error); return;
+                }
+                if (decision == NspInstallDecision::AlreadyInstalled) {
+                    if (journalExists) {
+                        bool committed{};
+                        if (!installer.recover(impl_->store, journal, committed, error)) {
+                            impl_->finish(generation, ui::OperationPhase::Failed, error); return;
+                        }
+                        if (!committed && !installer.discardStream(impl_->store, journal, error)) {
+                            impl_->finish(generation, ui::OperationPhase::Failed, error); return;
+                        }
+                    }
+                    impl_->removeTask(task.id, error);
+                    impl_->finish(generation, ui::OperationPhase::Completed, i18n::tr(i18n::TextId::InstallComplete)); return;
+                }
+                if (!journalExists) { journal = {}; journal.libraryId = task.id; journal.streaming = true; }
+                task.state = TaskState::Installing; task.error.clear(); impl_->upsertTask(task, error);
+                impl_->operation.setPhase(generation, ui::OperationPhase::Installing, i18n::tr(i18n::TextId::InstallNsp), true);
+                impl_->notify();
+                bool resumable{}; uint64_t installedBytes{};
+                const bool installed = installer.installStream(pfs0, streamRange, package, destination, impl_->store, journal,
+                    [&](uint64_t current, uint64_t total) {
+                        installedBytes = current; impl_->operation.update(generation, current, total); impl_->notify();
+                        return impl_->operation.shouldContinue(generation);
+                    }, resumable, error);
+                task.committedBytes = installedBytes; task.etag = responseEtag;
+                if (installed) {
+                    std::string cleanupError;
+                    if (!impl_->store.clearInstallJournal(cleanupError)) {
+                        task.state = TaskState::Completed; task.error = cleanupError; impl_->upsertTask(task, cleanupError);
+                    } else impl_->removeTask(task.id, cleanupError);
+                    impl_->finish(generation, ui::OperationPhase::Completed,
+                        cleanupError.empty() ? i18n::tr(i18n::TextId::InstallComplete) : cleanupError);
+                } else if (resumable) {
+                    task.state = TaskState::Paused; task.error = error; impl_->upsertTask(task, error);
+                    impl_->finish(generation, ui::OperationPhase::Paused, task.error);
+                } else {
+                    impl_->removeTask(task.id, error);
+                    impl_->finish(generation, ui::OperationPhase::Failed, error);
+                }
+                return;
+            }
             if (!reconcileTask(task, error)) { task.state = TaskState::Failed; task.error = error; impl_->upsertTask(task, error); impl_->finish(generation, ui::OperationPhase::Failed, error); return; }
             if (!hasEnoughSpace(task.expectedSize - task.committedBytes)) {
                 task.state = TaskState::Paused; task.error = i18n::tr(i18n::TextId::SdCardInsufficient);
@@ -1122,6 +1241,24 @@ void AppController::removeLibraryPackage(size_t index) {
     std::string error;
     { std::scoped_lock lock(impl_->stateMutex); if (index >= impl_->state.library.size()) return; impl_->store.removeDownload(impl_->state, impl_->state.library[index].id, error); }
     impl_->notify();
+}
+
+void AppController::discardStreamInstall(const std::string& id) {
+    if (impl_->operation.snapshot().busy) return;
+    const auto state = impl_->stateCopy();
+    const auto task = std::find_if(state.tasks.begin(), state.tasks.end(), [&](const Task& value) {
+        return value.id == id && value.kind == TaskKind::StreamInstall && value.state == TaskState::Paused;
+    });
+    if (task == state.tasks.end()) return;
+    impl_->launch(ui::OperationPhase::Removing, i18n::TextId::Transfers, i18n::TextId::DiscardStreamInstall, false,
+        [this, id](uint64_t generation) {
+            std::string error; NspInstallJournal journal; bool exists{};
+            bool ok = impl_->store.loadInstallJournal(journal, error, exists);
+            if (ok && exists && journal.libraryId != id) { ok = false; error = i18n::tr(i18n::TextId::JournalIncomplete); }
+            if (ok && exists) ok = NspInstaller{}.discardStream(impl_->store, journal, error);
+            if (ok) impl_->removeTask(id, error);
+            impl_->finish(generation, ok ? ui::OperationPhase::Completed : ui::OperationPhase::Failed, ok ? "" : error);
+        });
 }
 
 void AppController::cancelOperation() { impl_->operation.requestCancel(); impl_->notify(); }

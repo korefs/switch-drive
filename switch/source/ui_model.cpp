@@ -102,7 +102,8 @@ TransfersModel makeTransfersModel(const State& state, const OperationSnapshot& o
         if (!activeTransfer(task.state)) continue;
         model.entries.push_back({task.id,
             task.displayName.empty() ? i18n::tr(i18n::TextId::Transfers) : task.displayName,
-            transferDetail(task, operation, &task == current), task.state});
+            transferDetail(task, operation, &task == current), task.state,
+            task.kind == TaskKind::StreamInstall && task.state == TaskState::Paused});
     }
     return model;
 }

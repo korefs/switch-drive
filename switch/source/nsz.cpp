@@ -240,6 +240,43 @@ class ZstdDecoder {
     std::vector<uint8_t> inputBuffer_, outputBuffer_;
 };
 
+class PushZstdDecoder {
+  public:
+    PushZstdDecoder() : stream_(ZSTD_createDStream()), outputBuffer_(kIoSize) {}
+    ~PushZstdDecoder() { if (stream_) ZSTD_freeDStream(stream_); }
+    bool begin(uint64_t expected, NczOutput& output, std::string& error) {
+        expected_ = expected; produced_ = 0; output_ = &output; remaining_ = 1;
+        if (!stream_ || ZSTD_isError(ZSTD_initDStream(stream_))) { error = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
+        return true;
+    }
+    bool push(const void* bytes, size_t size, std::string& error) {
+        if (!output_) { error = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
+        ZSTD_inBuffer input{bytes, size, 0};
+        while (input.pos < input.size) {
+            const uint64_t available = expected_ - produced_;
+            ZSTD_outBuffer decoded{outputBuffer_.data(), static_cast<size_t>(std::min<uint64_t>(outputBuffer_.size(), available ? available : 1)), 0};
+            const size_t before = input.pos;
+            remaining_ = ZSTD_decompressStream(stream_, &decoded, &input);
+            if (ZSTD_isError(remaining_) || decoded.pos > available) { error = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
+            if (decoded.pos && !output_->write(outputBuffer_.data(), decoded.pos, error)) return false;
+            produced_ += decoded.pos;
+            if (!decoded.pos && input.pos == before) { error = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
+            if (remaining_ == 0 && input.pos != input.size) { error = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
+        }
+        return true;
+    }
+    bool finish(std::string& error) const {
+        if (produced_ != expected_ || remaining_ != 0) { error = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
+        return true;
+    }
+  private:
+    ZSTD_DStream* stream_{};
+    std::vector<uint8_t> outputBuffer_;
+    NczOutput* output_{};
+    uint64_t expected_{}, produced_{};
+    size_t remaining_{1};
+};
+
 } // namespace
 
 bool inspectNcz(const Pfs0& pfs0, const Pfs0Entry& entry, uint64_t& decompressedSize, std::string& error) {
@@ -275,6 +312,62 @@ bool streamNcz(const Pfs0& pfs0, const Pfs0Entry& entry, const NczSink& sink, st
             sourceOffset += compressedSize;
             remainingOutput -= blockOutput;
         }
+    }
+    if (!output.complete()) { error = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
+    return true;
+}
+
+bool streamNcz(const Pfs0& pfs0, const Pfs0Entry& entry, const PackageStream& source, const NczSink& sink, std::string& error) {
+    if (!source || !sink) { error = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
+    NczLayout layout;
+    if (!parseNcz(pfs0, entry, layout, error)) return false;
+    std::vector<uint8_t> header(kNcaHeaderSize);
+    if (!readNcz(pfs0, entry, 0, header.data(), header.size(), error) || !sink(0, header.data(), header.size(), error)) return false;
+    NczOutput output(layout, sink);
+    if (!layout.blockCompressed) {
+        PushZstdDecoder decoder;
+        if (!decoder.begin(layout.decompressedSize - kNcaHeaderSize, output, error)) return false;
+        uint64_t received{};
+        const uint64_t inputSize = entry.size - layout.dataOffset;
+        if (!source(entry.offset + layout.dataOffset, inputSize,
+            [&](uint64_t offset, const void* data, size_t size, std::string& sourceError) {
+                if (offset != received) { sourceError = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
+                received += size;
+                return decoder.push(data, size, sourceError);
+            }, error) || received != inputSize || !decoder.finish(error)) return false;
+    } else {
+        PushZstdDecoder decoder;
+        uint64_t received{}, blockReceived{}, remainingOutput = layout.block.decompressedSize;
+        size_t blockIndex{};
+        bool compressedBlock{};
+        const auto beginBlock = [&]() {
+            const uint64_t blockOutput = std::min<uint64_t>(layout.block.blockSize, remainingOutput);
+            compressedBlock = layout.block.compressedSizes[blockIndex] != blockOutput;
+            return !compressedBlock || decoder.begin(blockOutput, output, error);
+        };
+        if (!beginBlock()) return false;
+        const uint64_t inputSize = entry.size - layout.block.dataOffset;
+        if (!source(entry.offset + layout.block.dataOffset, inputSize,
+            [&](uint64_t offset, const void* raw, size_t size, std::string& sourceError) {
+                if (offset != received) { sourceError = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
+                const auto* data = static_cast<const uint8_t*>(raw);
+                size_t consumed{};
+                while (consumed < size) {
+                    if (blockIndex >= layout.block.compressedSizes.size()) { sourceError = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
+                    const uint64_t blockInput = layout.block.compressedSizes[blockIndex];
+                    const size_t amount = static_cast<size_t>(std::min<uint64_t>(size - consumed, blockInput - blockReceived));
+                    const bool ok = compressedBlock ? decoder.push(data + consumed, amount, sourceError) : output.write(const_cast<uint8_t*>(data + consumed), amount, sourceError);
+                    if (!ok) return false;
+                    consumed += amount; received += amount; blockReceived += amount;
+                    if (blockReceived == blockInput) {
+                        if (compressedBlock && !decoder.finish(sourceError)) return false;
+                        remainingOutput -= std::min<uint64_t>(layout.block.blockSize, remainingOutput);
+                        ++blockIndex; blockReceived = 0;
+                        if (blockIndex < layout.block.compressedSizes.size() && !beginBlock()) { sourceError = error; return false; }
+                    }
+                }
+                return true;
+            }, error) || received != inputSize || blockIndex != layout.block.compressedSizes.size()) return false;
     }
     if (!output.complete()) { error = i18n::tr(i18n::TextId::NczDecompressionFailed); return false; }
     return true;

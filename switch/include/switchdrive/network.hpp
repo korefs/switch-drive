@@ -78,6 +78,7 @@ std::string formatTransferProgress(uint64_t received, uint64_t total, const Tran
 
 enum class RangeResponse { AcceptBody, AlreadyComplete, Reject };
 RangeResponse validateRangeResponse(long status, const std::string& contentRange, uint64_t resumeAt, uint64_t expectedSize);
+bool validateExactRangeResponse(long status, const std::string& contentRange, uint64_t first, uint64_t size, uint64_t total);
 
 class HttpClient {
   public:
@@ -87,6 +88,9 @@ class HttpClient {
     bool post(const std::string& url, const std::string& body, const std::vector<std::string>& headers, Response& out, std::string& error) const;
     bool del(const std::string& url, const std::vector<std::string>& headers, Response& out, std::string& error) const;
     bool download(const std::string& url, const std::vector<std::string>& headers, DownloadWriter& output, uint64_t resumeAt, uint64_t expectedSize, const std::string& ifRange, std::function<bool(const std::string&)> headersAccepted, std::function<bool(uint64_t)> progress, DownloadResult& result, std::string& error) const;
+    bool range(const std::string& url, const std::vector<std::string>& headers, uint64_t offset, uint64_t size,
+        uint64_t totalSize, const std::string& ifRange, const NczSink& sink, std::string& etag,
+        std::string& error) const;
   private:
     ActivityCallback activity_;
 };

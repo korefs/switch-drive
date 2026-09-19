@@ -83,6 +83,7 @@ class AppController {
 
     void installLibraryItem(size_t index, NspInstallStorage destination);
     void removeLibraryPackage(size_t index);
+    void discardStreamInstall(const std::string& id);
 
     void cancelOperation();
     bool appletMode() const;

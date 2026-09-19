@@ -47,7 +47,9 @@ to the microSD card, and optionally install supported packages from the console.
 - Files of 4 GiB or more stored as native HOS concatenated files, avoiding the
   FAT32 per-file limit while preserving one logical filename on the Switch.
 - Standalone NRO installation and transactional NSP/NSZ installation for one
-  base game, update, or DLC per package.
+  base game, update, or DLC per package. **Download and install** streams
+  NSP/NSZ content directly into NCM placeholders instead of storing the whole
+  package first.
 - Downgrade protection, selectable SD/internal installation storage, and
   interrupted-install recovery.
 - Local library for downloaded packages. Successfully installed packages are
@@ -64,8 +66,8 @@ to the microSD card, and optionally install supported packages from the console.
 | Type | Download | Install | Notes |
 | --- | :---: | :---: | --- |
 | `.nro` | Yes | Yes | Standalone app in `sd:/switch/<app-name>/` |
-| `.nsp` | Yes | Yes | One base game, update, or DLC through NCM |
-| `.nsz` | Yes | Yes | Streams NCZ into NCM; no intermediate NSP |
+| `.nsp` | Yes | Yes | Direct-to-NCM streaming for Download and install |
+| `.nsz` | Yes | Yes | Streams and decompresses NCZ directly into NCM |
 | `.xci`, `.zip`, and other files | Yes | No | Stored as regular downloads |
 | Native Google documents | No | No | Metadata only; no export |
 
@@ -382,6 +384,9 @@ docker build --target test -t switch-drive-home-storage-tests .
 - State writes use temporary files, backups, and atomic replacement.
 - Downloads checkpoint committed data and reject unsafe HTTP range responses or
   changed Drive revisions before resuming.
+- Streamed installs validate every exact HTTP range and every reconstructed NCA
+  against CNMT hashes. Completed placeholders survive interruptions; only the
+  interrupted NCA/NCZ is fetched again when resuming.
 - NSP/NSZ mutations are journaled before NCM changes. On the next launch, the
   app checks live metadata and either completes or rolls back recovery.
 - Existing content remains registered until replacement metadata commits.

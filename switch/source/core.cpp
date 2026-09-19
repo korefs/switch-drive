@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <set>
 #include <sstream>
 #include <system_error>
 
@@ -55,6 +56,9 @@ TaskState parseTaskState(const std::string& value) {
     if (value == "cancelled") return TaskState::Cancelled;
     return TaskState::Paused;
 }
+
+const char* taskKindName(TaskKind kind) { return kind == TaskKind::StreamInstall ? "stream-install" : "download"; }
+TaskKind parseTaskKind(const std::string& value) { return value == "stream-install" ? TaskKind::StreamInstall : TaskKind::Download; }
 
 const char* localStateName(LocalState state) {
     switch (state) {
@@ -643,9 +647,9 @@ State StateStore::load() {
     if (!input.good()) return state;
     const std::string json((std::istreambuf_iterator<char>(input)), {});
     const int schemaVersion = static_cast<int>(numberField(json, "schemaVersion"));
-    if (schemaVersion < 1 || schemaVersion > 8) return state;
+    if (schemaVersion < 1 || schemaVersion > 9) return state;
 
-    state.schemaVersion = 8;
+    state.schemaVersion = 9;
     state.serviceUrl = stringField(json, "serviceUrl");
     state.consolePublicKey = stringField(json, "consolePublicKey");
     state.sessionToken = stringField(json, "sessionToken");
@@ -729,6 +733,7 @@ State StateStore::load() {
             task.state = parseTaskState(stringField(row, "state"));
             task.localState = parseLocalState(stringField(row, "localState"));
             task.storageKind = stringField(row, "storageKind") == "concatenated" ? StorageKind::Concatenated : StorageKind::Regular;
+            task.kind = schemaVersion >= 9 ? parseTaskKind(stringField(row, "taskKind")) : TaskKind::Download;
             task.installAfterDownload = boolField(row, "installAfterDownload", false);
             task.error = stringField(row, "error");
             if (!task.id.empty()) state.tasks.push_back(std::move(task));
@@ -753,7 +758,7 @@ bool StateStore::save(const State& state, std::string& error) {
         return false;
     }
     const std::string language(i18n::languageCode(i18n::parseLanguage(state.language)));
-    output << "{\"schemaVersion\":8,\"serviceUrl\":\"" << escape(state.serviceUrl)
+    output << "{\"schemaVersion\":9,\"serviceUrl\":\"" << escape(state.serviceUrl)
            << "\",\"consolePublicKey\":\"" << escape(state.consolePublicKey)
            << "\",\"sessionToken\":\"" << escape(state.sessionToken)
            << "\",\"lastAccountId\":\"" << escape(state.lastAccountId)
@@ -784,6 +789,7 @@ bool StateStore::save(const State& state, std::string& error) {
                << "\",\"expectedSize\":" << task.expectedSize << ",\"committedBytes\":" << task.committedBytes
                << ",\"state\":\"" << taskStateName(task.state) << "\",\"localState\":\"" << localStateName(task.localState)
                << "\",\"storageKind\":\"" << storageKindName(task.storageKind)
+               << "\",\"taskKind\":\"" << taskKindName(task.kind)
                << "\",\"installAfterDownload\":" << (task.installAfterDownload ? "true" : "false")
                << ",\"error\":\"" << escape(task.error) << "\"}";
     }
@@ -817,7 +823,8 @@ bool StateStore::loadInstallJournal(NspInstallJournal& journal, std::string& err
     if (!input.good()) return true;
     exists = true;
     const std::string json((std::istreambuf_iterator<char>(input)), {});
-    if (numberField(json, "journalVersion") != 1) { error = i18n::tr(i18n::TextId::JournalInvalid); return false; }
+    const auto version = numberField(json, "journalVersion");
+    if (version != 1 && version != 2) { error = i18n::tr(i18n::TextId::JournalInvalid); return false; }
     journal.operation = stringField(json, "operation");
     journal.libraryId = stringField(json, "libraryId");
     journal.localPath = stringField(json, "localPath");
@@ -825,6 +832,7 @@ bool StateStore::loadInstallJournal(NspInstallJournal& journal, std::string& err
     journal.targetStorage = parseNspStorage(stringField(json, "targetStorage"));
     journal.ticketWasPresent = boolField(json, "ticketWasPresent", false);
     journal.ticketImported = boolField(json, "ticketImported", false);
+    journal.streaming = version >= 2 && boolField(json, "streaming", false);
     journal.package.kind = parseNspKind(stringField(json, "kind"));
     journal.package.metaId = stringField(json, "metaId");
     journal.package.baseTitleId = stringField(json, "baseTitleId");
@@ -833,6 +841,8 @@ bool StateStore::loadInstallJournal(NspInstallJournal& journal, std::string& err
         NspJournalContent content;
         content.id = stringField(row, "id"); content.placeholderId = stringField(row, "placeholderId");
         content.created = boolField(row, "created", false);
+        content.completed = version >= 2 && boolField(row, "completed", false);
+        content.registered = version >= 2 && boolField(row, "registered", false);
         if (!content.id.empty()) journal.contents.push_back(std::move(content));
     }
     if (journal.operation.empty() || journal.package.metaId.empty()) { error = i18n::tr(i18n::TextId::JournalIncomplete); return false; }
@@ -849,16 +859,20 @@ bool StateStore::saveInstallJournal(const NspInstallJournal& journal, std::strin
     std::FILE* output = std::fopen(temporary.string().c_str(), "wb");
     if (!output) { error = i18n::tr(i18n::TextId::JournalWriteFailed); return false; }
     std::ostringstream data;
-    data << "{\"journalVersion\":1,\"operation\":\"" << escape(journal.operation) << "\",\"libraryId\":\"" << escape(journal.libraryId)
+    data << "{\"journalVersion\":2,\"operation\":\"" << escape(journal.operation) << "\",\"libraryId\":\"" << escape(journal.libraryId)
          << "\",\"localPath\":\"" << escape(journal.localPath) << "\",\"phase\":\"" << escape(journal.phase)
          << "\",\"targetStorage\":\"" << nspStorageName(journal.targetStorage) << "\""
          << ",\"ticketWasPresent\":" << (journal.ticketWasPresent ? "true" : "false") << ",\"ticketImported\":" << (journal.ticketImported ? "true" : "false")
+         << ",\"streaming\":" << (journal.streaming ? "true" : "false")
          << ",\"kind\":\"" << nspKindName(journal.package.kind) << "\",\"metaId\":\"" << escape(journal.package.metaId)
          << "\",\"baseTitleId\":\"" << escape(journal.package.baseTitleId) << "\",\"version\":" << journal.package.version << ",\"contents\":[";
     for (size_t i = 0; i < journal.contents.size(); ++i) {
         if (i) data << ',';
         const auto& content = journal.contents[i];
-        data << "{\"id\":\"" << escape(content.id) << "\",\"placeholderId\":\"" << escape(content.placeholderId) << "\",\"created\":" << (content.created ? "true" : "false") << "}";
+        data << "{\"id\":\"" << escape(content.id) << "\",\"placeholderId\":\"" << escape(content.placeholderId)
+             << "\",\"created\":" << (content.created ? "true" : "false")
+             << ",\"completed\":" << (content.completed ? "true" : "false")
+             << ",\"registered\":" << (content.registered ? "true" : "false") << "}";
     }
     data << "]}";
     const std::string encoded = data.str();
@@ -925,14 +939,26 @@ bool Pfs0::open(const fs::path& path, StorageKind kind, std::string& error, uint
     valid_ = false;
     entries_.clear();
     input_.close();
+    reader_ = {};
     path_ = path;
     kind_ = kind;
     segmentSize_ = segmentSize;
     if (!input_.open(path, kind, false, error, segmentSize)) return false;
     uint64_t total{};
     if (!input_.size(total, error)) return false;
+    reader_ = [this](uint64_t offset, void* buffer, size_t size, std::string& readError) {
+        return input_.readAt(offset, buffer, size, readError);
+    };
+    return open(total, reader_, error);
+}
+
+bool Pfs0::open(uint64_t total, Reader reader, std::string& error) {
+    valid_ = false;
+    entries_.clear();
+    if (!reader || total < sizeof(Pfs0Header)) { error = i18n::tr(i18n::TextId::Pfs0InvalidHeader); return false; }
+    reader_ = std::move(reader);
     Pfs0Header header{};
-    if (!input_.readAt(0, &header, sizeof(header), error) || std::string(header.magic, 4) != "PFS0" || header.fileCount == 0 || header.fileCount > 4096 || header.stringTableSize > 4 * 1024 * 1024) {
+    if (!reader_(0, &header, sizeof(header), error) || std::string(header.magic, 4) != "PFS0" || header.fileCount == 0 || header.fileCount > 4096 || header.stringTableSize > 4 * 1024 * 1024) {
         error = i18n::tr(i18n::TextId::Pfs0InvalidHeader);
         return false;
     }
@@ -944,10 +970,11 @@ bool Pfs0::open(const fs::path& path, StorageKind kind, std::string& error, uint
     }
     std::vector<Pfs0RawEntry> raw(header.fileCount);
     std::string strings(header.stringTableSize, '\0');
-    if (!input_.readAt(sizeof(header), raw.data(), static_cast<size_t>(rawSize), error) || !input_.readAt(sizeof(header) + rawSize, strings.data(), strings.size(), error)) {
+    if (!reader_(sizeof(header), raw.data(), static_cast<size_t>(rawSize), error) || !reader_(sizeof(header) + rawSize, strings.data(), strings.size(), error)) {
         error = i18n::tr(i18n::TextId::Pfs0InvalidData);
         return false;
     }
+    std::set<std::string> names;
     for (const auto& entry : raw) {
         if (entry.stringOffset >= strings.size() || entry.offset > total - dataStart || entry.size > total - dataStart - entry.offset) {
             error = i18n::tr(i18n::TextId::Pfs0InvalidEntries);
@@ -961,8 +988,16 @@ bool Pfs0::open(const fs::path& path, StorageKind kind, std::string& error, uint
             error = i18n::tr(i18n::TextId::Pfs0InvalidName);
             return false;
         }
-        entries_.push_back({std::string(name, length), dataStart + entry.offset, entry.size});
+        std::string parsedName(name, length);
+        if (!names.insert(parsedName).second) { error = i18n::tr(i18n::TextId::Pfs0InvalidEntries); return false; }
+        entries_.push_back({std::move(parsedName), dataStart + entry.offset, entry.size});
     }
+    auto ordered = entries_;
+    std::sort(ordered.begin(), ordered.end(), [](const Pfs0Entry& left, const Pfs0Entry& right) { return left.offset < right.offset; });
+    for (size_t i = 1; i < ordered.size(); ++i)
+        if (ordered[i - 1].offset > UINT64_MAX - ordered[i - 1].size || ordered[i - 1].offset + ordered[i - 1].size > ordered[i].offset) {
+            error = i18n::tr(i18n::TextId::Pfs0InvalidEntries); return false;
+        }
     valid_ = true;
     return true;
 }
@@ -974,7 +1009,8 @@ const Pfs0Entry* Pfs0::find(const std::string& name) const {
 
 bool Pfs0::read(const Pfs0Entry& entry, uint64_t offset, void* buffer, size_t size, std::string& error) const {
     if (!valid_ || offset > entry.size || size > entry.size - offset) { error = i18n::tr(i18n::TextId::Pfs0ReadOutOfBounds); return false; }
-    return input_.readAt(entry.offset + offset, buffer, size, error);
+    if (!reader_) { error = i18n::tr(i18n::TextId::Pfs0InvalidData); return false; }
+    return reader_(entry.offset + offset, buffer, size, error);
 }
 
 } // namespace switchdrive

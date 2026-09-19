@@ -43,6 +43,7 @@ struct TransferRowModel {
     std::string title;
     std::string detail;
     TaskState state{TaskState::Queued};
+    bool canDiscardInstall{};
 };
 
 struct TransfersModel {

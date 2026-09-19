@@ -79,6 +79,8 @@ enum class TextId {
     ButtonZL, ButtonL, ButtonR, Download, DownloadAndInstall, Back,
     RestartRequired, ExitConfirm, ExitActiveConfirm,
     NetworkProfileDiagnostic, DownloadPerformanceDiagnostic,
+    PreparingStreamInstall, StreamInstallInterrupted, StreamingRangeRequired,
+    DiscardStreamInstall, DiscardStreamInstallConfirm,
     Count
 };
 

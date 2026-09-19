@@ -265,7 +265,7 @@ class TransfersView final : public ObservedBox {
         recycler = new brls::RecyclerFrame();
         recycler->setGrow(1);
         recycler->registerCell("detail", [] { return new brls::DetailCell(); });
-        recycler->setDataSource(new ModelDataSource([this] { return rows(); }, {}, {}, {}, false));
+        recycler->setDataSource(new ModelDataSource([this] { return rows(); }, [this](size_t index) { discard(index); }, {}, {}, true));
         addView(recycler);
         registerAction(i18n::tr(i18n::TextId::Cancel), brls::BUTTON_B, [this](brls::View*) {
             const auto model = controller.transfersSnapshot();
@@ -284,6 +284,18 @@ class TransfersView final : public ObservedBox {
 
   private:
     brls::RecyclerFrame* recycler{};
+
+    void discard(size_t index) {
+        const auto model = controller.transfersSnapshot();
+        if (index >= model.entries.size() || !model.entries[index].canDiscardInstall) return;
+        const std::string id = model.entries[index].id;
+        auto* dialog = new brls::Dialog(i18n::tr(i18n::TextId::DiscardStreamInstallConfirm));
+        dialog->addButton(i18n::tr(i18n::TextId::DiscardStreamInstall), [this, id] {
+            controller.discardStreamInstall(id); pushOperation(controller);
+        });
+        dialog->addButton(i18n::tr(i18n::TextId::Cancel), [] {});
+        dialog->open();
+    }
 
     std::vector<Row> rows() const {
         const auto model = controller.transfersSnapshot();
