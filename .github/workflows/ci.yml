@@ -12,8 +12,72 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Build decision
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.filter.outputs.build }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check for build-impacting changes
+        id: filter
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF}" != "refs/heads/develop" && "${GITHUB_BASE_REF:-}" != "develop" ]]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Build required outside develop."
+            exit 0
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            if ! git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null || ! git cat-file -e "${PR_HEAD_SHA}^{commit}" 2>/dev/null; then
+              echo "build=true" >> "$GITHUB_OUTPUT"
+              echo "Build required because the pull request range is unavailable."
+              exit 0
+            fi
+            mapfile -t changed_files < <(git diff --name-only "${PR_BASE_SHA}...${PR_HEAD_SHA}")
+          elif [[ -n "${BEFORE_SHA:-}" && ! "${BEFORE_SHA}" =~ ^0+$ ]] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            mapfile -t changed_files < <(git diff --name-only "${BEFORE_SHA}" "${GITHUB_SHA}")
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Build required because the previous revision is unavailable."
+            exit 0
+          fi
+
+          build=false
+          for file in "${changed_files[@]}"; do
+            case "$file" in
+              *.c|*.cc|*.cpp|*.cxx|*.h|*.hh|*.hpp|*.hxx|*.cs|*.csproj|*.sln|*.slnx|\
+              *.js|*.jsx|*.mjs|*.cjs|*.ts|*.tsx|*.json|*.jsonc|*.yaml|*.yml|\
+              *.cmake|*.css|*.html|*.xml|*.py|*.sh|*.toml|*.lock|*.rsp|*.dockerignore|\
+              CMakeLists.txt|*/CMakeLists.txt|Makefile|*/Makefile|Dockerfile|*/Dockerfile|\
+              Caddyfile|*/Caddyfile|_headers|*/_headers|.gitmodules|third_party/*|\
+              assets/*|romfs/*|icon.*)
+                build=true
+                echo "Build required by: $file"
+                break
+                ;;
+            esac
+          done
+
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          if [[ "$build" == "false" ]]; then
+            echo "No build-impacting changes on develop; build jobs will be skipped."
+          fi
+
   portable-tests:
     name: Portable C++ tests
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -31,6 +95,8 @@ jobs:
 
   pairing-service:
     name: Pairing service build
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-latest
 
     defaults:
@@ -53,6 +119,8 @@ jobs:
 
   worker-and-site:
     name: Worker and public site
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +141,8 @@ jobs:
 
   home-storage:
     name: Home Storage build and tests
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,6 +173,8 @@ jobs:
 
   switch-client:
     name: Switch client build
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-latest
 
     steps:
